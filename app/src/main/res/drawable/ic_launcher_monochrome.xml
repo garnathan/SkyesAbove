@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- SkyesAbove - Monochrome Icon for Themed Icons -->
+
+    <!-- Sun disc -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M72,38 m-14,0 a14,14 0 1,1 28,0 a14,14 0 1,1 -28,0"/>
+
+    <!-- Sun rays -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M72,10 L76,26 L68,26 Z"/>
+    <path
+        android:fillColor="#000000"
+        android:pathData="M96,18 L84,30 L88,36 Z"/>
+    <path
+        android:fillColor="#000000"
+        android:pathData="M100,42 L84,40 L84,46 Z"/>
+    <path
+        android:fillColor="#000000"
+        android:pathData="M92,64 L82,54 L86,50 Z"/>
+
+    <!-- Main cloud -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M28,78
+                         C14,78 8,68 8,58
+                         C8,50 14,42 24,40
+                         C26,26 40,16 56,16
+                         C70,16 82,26 86,40
+                         C88,39 90,38 93,38
+                         C104,38 110,48 110,60
+                         C110,72 100,82 88,82
+                         L28,82
+                         Z"/>
+
+    <!-- Cloud puffs -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M38,32 a16,16 0 1,1 0.01,0 Z"/>
+    <path
+        android:fillColor="#000000"
+        android:pathData="M60,26 a14,14 0 1,1 0.01,0 Z"/>
+    <path
+        android:fillColor="#000000"
+        android:pathData="M76,36 a10,10 0 1,1 0.01,0 Z"/>
+
+</vector>

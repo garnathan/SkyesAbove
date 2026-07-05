@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- SkyesAbove - Bold Weather App Icon -->
+    <!-- Safe zone: 66x66dp centered (21dp padding from each edge) -->
+
+    <!-- Bright sun with animated feel -->
+    <group
+        android:pivotX="72"
+        android:pivotY="38">
+
+        <!-- Sun outer glow - large and warm -->
+        <path
+            android:fillColor="#FFB300"
+            android:fillAlpha="0.5"
+            android:pathData="M72,38 m-22,0 a22,22 0 1,1 44,0 a22,22 0 1,1 -44,0"/>
+
+        <!-- Sun rays - bold triangular rays -->
+        <path
+            android:fillColor="#FFC107"
+            android:pathData="M72,10 L76,26 L68,26 Z"/>
+        <path
+            android:fillColor="#FFC107"
+            android:pathData="M96,18 L84,30 L88,36 Z"/>
+        <path
+            android:fillColor="#FFC107"
+            android:pathData="M100,42 L84,40 L84,46 Z"/>
+        <path
+            android:fillColor="#FFC107"
+            android:pathData="M92,64 L82,54 L86,50 Z"/>
+
+        <!-- Main sun disc - bright orange-yellow -->
+        <path
+            android:fillColor="#FFB300"
+            android:pathData="M72,38 m-14,0 a14,14 0 1,1 28,0 a14,14 0 1,1 -28,0"/>
+
+        <!-- Sun inner bright spot -->
+        <path
+            android:fillColor="#FFECB3"
+            android:pathData="M64,32 a8,8 0 0,1 10,-4"/>
+    </group>
+
+    <!-- Fluffy white cloud - prominent and detailed -->
+    <group>
+        <!-- Cloud shadow for depth -->
+        <path
+            android:fillColor="#3F51B5"
+            android:fillAlpha="0.2"
+            android:pathData="M28,82
+                             C14,82 8,72 8,62
+                             C8,54 14,46 24,44
+                             C26,30 40,20 56,20
+                             C70,20 82,30 86,44
+                             C88,43 90,42 93,42
+                             C104,42 110,52 110,64
+                             C110,76 100,86 88,86
+                             L28,86
+                             Z"/>
+
+        <!-- Main cloud body - bright white -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M28,78
+                             C14,78 8,68 8,58
+                             C8,50 14,42 24,40
+                             C26,26 40,16 56,16
+                             C70,16 82,26 86,40
+                             C88,39 90,38 93,38
+                             C104,38 110,48 110,60
+                             C110,72 100,82 88,82
+                             L28,82
+                             Z"/>
+
+        <!-- Cloud top puff - extra fluffy -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M38,32 a16,16 0 1,1 0.01,0 Z"/>
+
+        <!-- Cloud center puff -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M60,26 a14,14 0 1,1 0.01,0 Z"/>
+
+        <!-- Cloud small puff -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M76,36 a10,10 0 1,1 0.01,0 Z"/>
+
+        <!-- Cloud subtle bottom shading -->
+        <path
+            android:fillColor="#E3F2FD"
+            android:fillAlpha="0.7"
+            android:pathData="M28,78
+                             C14,78 8,68 8,58
+                             C8,56 9,54 11,52
+                             C15,58 22,62 32,62
+                             L86,62
+                             C92,62 97,58 100,52
+                             C102,54 104,56 104,60
+                             C104,68 98,74 90,78
+                             L28,78
+                             Z"/>
+    </group>
+
+</vector>
