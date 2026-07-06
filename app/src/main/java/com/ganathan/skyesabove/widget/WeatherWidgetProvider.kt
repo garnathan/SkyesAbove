@@ -52,9 +52,8 @@ class WeatherWidgetProvider : AppWidgetProvider() {
         val pending = goAsync()
         Thread {
             val views = try {
-                val d = WidgetRepo.load(context)
-                cache(context, d)
-                buildViews(context, d)
+                // load() fetches AND persists last-good per-source (no cache poisoning on failure)
+                buildViews(context, WidgetRepo.load(context))
             } catch (e: Exception) {
                 buildViewsFromCache(context)
             }
@@ -101,22 +100,6 @@ class WeatherWidgetProvider : AppWidgetProvider() {
                 pressure = g("pressure", "—")
             )
         )
-    }
-
-    private fun cache(context: Context, d: WidgetData) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("c_place", d.place)
-            .putString("c_areaTemp", d.areaTemp)
-            .putString("c_rain", d.rain)
-            .putString("c_windValue", d.windValue)
-            .putString("c_windUnit", d.windUnit)
-            .putString("c_todayEmoji", d.todayEmoji)
-            .putString("c_temp", d.temp)
-            .putString("c_humidity", d.humidity)
-            .putString("c_feels", d.feels)
-            .putString("c_feelsEmoji", d.feelsEmoji)
-            .putString("c_pressure", d.pressure)
-            .apply()
     }
 
     private fun alarmPi(context: Context): PendingIntent {

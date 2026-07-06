@@ -7,6 +7,7 @@ import android.location.Geocoder
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
+import android.util.Log
 import com.ganathan.skyesabove.ui.util.WindDirectionUtil
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.flow.first
@@ -17,6 +18,8 @@ import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
+
+private const val TAG = "SkyesWidget"
 
 /** All display strings the widget renders. */
 data class WidgetData(
@@ -37,13 +40,20 @@ object WidgetRepo {
     private data class LocResult(val lat: Double, val lon: Double, val name: String)
 
     fun load(context: Context): WidgetData {
+        // Start from the last-good cache so a FAILED fetch keeps the previous values on screen
+        // instead of regressing to "—". Each source only overwrites its fields on success.
+        val prefs = context.getSharedPreferences(WeatherWidgetProvider.PREFS, Context.MODE_PRIVATE)
+        fun cached(k: String, dft: String) = prefs.getString("c_$k", dft) ?: dft
+
         val ep = EntryPointAccessors.fromApplication(
             context.applicationContext, WidgetEntryPoint::class.java
         )
         val loc = resolveLocation(context, ep)
 
         // LEFT half — multi-source forecast for the current location
-        var areaTemp = "—"; var rain = "—"; var windValue = "—"; var windUnit = "km/h"; var todayEmoji = "⛅"
+        var areaTemp = cached("areaTemp", "—"); var rain = cached("rain", "—")
+        var windValue = cached("windValue", "—"); var windUnit = cached("windUnit", "km/h")
+        var todayEmoji = cached("todayEmoji", "⛅")
         try {
             val cur = runBlocking { ep.weatherRepository().getWeather(loc.lat, loc.lon) }
                 .getOrNull()?.current
@@ -53,20 +63,40 @@ object WidgetRepo {
                 windValue = "${cur.windSpeed.roundToInt()}"
                 windUnit = "km/h " + WindDirectionUtil.degreesToCompassDirection(cur.windDirection.toDouble())
                 todayEmoji = conditionEmoji(cur.description, cur.symbol)
+            } else {
+                Log.w(TAG, "forecast returned null — keeping last-good")
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "forecast fetch failed — keeping last-good", e)
         }
 
         // RIGHT half — the user's own WU station
-        var temp = "—"; var humidity = "—"; var feels = "—"; var feelsEmoji = "🌡️"; var pressure = "—"
+        var temp = cached("temp", "—"); var humidity = cached("humidity", "—")
+        var feels = cached("feels", "—"); var feelsEmoji = cached("feelsEmoji", "🌡️")
+        var pressure = cached("pressure", "—")
         try {
             val h = WuStation.fetch()
             temp = h.temp; humidity = h.humidity; feels = h.feels; feelsEmoji = h.feelsEmoji; pressure = h.pressure
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "WU station fetch failed — keeping last-good", e)
         }
 
+        // Keep the last-good place name if geocoding fell back to the generic label.
+        val place = if (loc.name == "Current location") cached("place", loc.name) else loc.name
+
+        // Persist the freshest-available values (never "—" once we've had one success).
+        prefs.edit()
+            .putString("c_place", place)
+            .putString("c_areaTemp", areaTemp).putString("c_rain", rain)
+            .putString("c_windValue", windValue).putString("c_windUnit", windUnit)
+            .putString("c_todayEmoji", todayEmoji)
+            .putString("c_temp", temp).putString("c_humidity", humidity)
+            .putString("c_feels", feels).putString("c_feelsEmoji", feelsEmoji)
+            .putString("c_pressure", pressure)
+            .apply()
+
         return WidgetData(
-            place = loc.name,
+            place = place,
             areaTemp = areaTemp, rain = rain, windValue = windValue, windUnit = windUnit, todayEmoji = todayEmoji,
             temp = temp, humidity = humidity, feels = feels, feelsEmoji = feelsEmoji, pressure = pressure
         )
@@ -197,29 +227,39 @@ object WuStation {
         val feels: String, val feelsEmoji: String, val pressure: String
     )
 
+    /** Fetch with a small retry to ride out transient network blips. */
     fun fetch(): Home {
         val url = "https://api.weather.com/v2/pws/observations/current" +
             "?stationId=$STATION&format=json&units=m&apiKey=$KEY"
-        val obs = JSONObject(httpGet(url)).getJSONArray("observations").getJSONObject(0)
-        val m = obs.getJSONObject("metric")
-        val t = m.getDouble("temp")
-        val heat = m.optDouble("heatIndex", t)
-        val chill = m.optDouble("windChill", t)
-        val feelsV = if (t <= 10.0 && !chill.isNaN()) chill else if (!heat.isNaN()) heat else t
-        val hum = obs.getInt("humidity")
-        val press = m.optDouble("pressure", Double.NaN)
-        val feelsEmoji = when {
-            feelsV >= 27.0 -> "🥵"
-            feelsV <= 4.0 -> "🥶"
-            else -> "🌡️"
+        var last: Exception? = null
+        for (attempt in 0 until 2) {
+            try {
+                val obs = JSONObject(httpGet(url)).getJSONArray("observations").getJSONObject(0)
+                val m = obs.getJSONObject("metric")
+                val t = m.getDouble("temp")
+                val heat = m.optDouble("heatIndex", t)
+                val chill = m.optDouble("windChill", t)
+                val feelsV = if (t <= 10.0 && !chill.isNaN()) chill else if (!heat.isNaN()) heat else t
+                val hum = obs.getInt("humidity")
+                val press = m.optDouble("pressure", Double.NaN)
+                val feelsEmoji = when {
+                    feelsV >= 27.0 -> "🥵"
+                    feelsV <= 4.0 -> "🥶"
+                    else -> "🌡️"
+                }
+                return Home(
+                    temp = "${t.roundToInt()}°",
+                    humidity = "$hum%",
+                    feels = "${feelsV.roundToInt()}°",
+                    feelsEmoji = feelsEmoji,
+                    pressure = if (press.isNaN()) "—" else "${press.roundToInt()}"
+                )
+            } catch (e: Exception) {
+                last = e
+                if (attempt == 0) Thread.sleep(1500)
+            }
         }
-        return Home(
-            temp = "${t.roundToInt()}°",
-            humidity = "$hum%",
-            feels = "${feelsV.roundToInt()}°",
-            feelsEmoji = feelsEmoji,
-            pressure = if (press.isNaN()) "—" else "${press.roundToInt()}"
-        )
+        throw last ?: RuntimeException("WU fetch failed")
     }
 
     private fun httpGet(urlStr: String): String {
