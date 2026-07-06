@@ -53,6 +53,15 @@ data class UserSettings(
 }
 
 /**
+ * A previously-resolved device location, cached so the widget can self-heal when a live fix fails.
+ */
+data class CachedLocation(
+    val latitude: Double,
+    val longitude: Double,
+    val name: String
+)
+
+/**
  * DataStore-based settings repository for app preferences.
  */
 @Singleton
@@ -66,6 +75,13 @@ class SettingsDataStore @Inject constructor(
         val TEMPERATURE_UNIT = stringPreferencesKey("temperature_unit")
         val OWM_API_KEY = stringPreferencesKey("owm_api_key")
         val THEME_MODE = stringPreferencesKey("theme_mode")
+
+        // Last SUCCESSFULLY-resolved device location. This is a *location* cache (never a
+        // weather-value cache): if a live GPS/network fix fails, the widget reuses the last
+        // good fix instead of snapping to the hard-coded Killiney default, so it self-heals.
+        val LAST_LOC_LAT = doublePreferencesKey("last_loc_lat")
+        val LAST_LOC_LON = doublePreferencesKey("last_loc_lon")
+        val LAST_LOC_NAME = stringPreferencesKey("last_loc_name")
     }
 
     /**
@@ -189,6 +205,31 @@ class SettingsDataStore @Inject constructor(
     suspend fun setThemeMode(mode: ThemeMode) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.THEME_MODE] = mode.name
+        }
+    }
+
+    /**
+     * The last successfully-resolved device location, or null if we've never resolved one.
+     * Used as a self-healing fallback when a live location fix is unavailable.
+     */
+    val lastKnownLocation: Flow<CachedLocation?> = context.dataStore.data.map { preferences ->
+        val lat = preferences[PreferencesKeys.LAST_LOC_LAT]
+        val lon = preferences[PreferencesKeys.LAST_LOC_LON]
+        if (lat != null && lon != null) {
+            CachedLocation(lat, lon, preferences[PreferencesKeys.LAST_LOC_NAME] ?: "Current location")
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Persist the last successfully-resolved device location.
+     */
+    suspend fun setLastKnownLocation(latitude: Double, longitude: Double, name: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.LAST_LOC_LAT] = latitude
+            preferences[PreferencesKeys.LAST_LOC_LON] = longitude
+            preferences[PreferencesKeys.LAST_LOC_NAME] = name
         }
     }
 

@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
 import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
 import com.ganathan.skyesabove.ui.util.WindDirectionUtil
@@ -22,7 +24,21 @@ import kotlin.math.roundToInt
 private const val TAG = "SkyesWidget"
 private const val NO_DATA = "—"   // shown whenever a value is NOT live/fresh (never stale cache)
 
-/** All display strings the widget renders. */
+/**
+ * Outcome of fetching one half of the widget.
+ *  - OK          : live data obtained this refresh.
+ *  - STALE       : the source WAS reached, but its data is genuinely out of date
+ *                  (e.g. the WU obs is older than the freshness window => the Pi is down).
+ *  - FETCH_ERROR : we could not reach the source at all (network gap, timeout, HTTP error).
+ *
+ * The display treats STALE and FETCH_ERROR identically ("—" + a "!" flag, never a stale value),
+ * but the *scheduler* uses the distinction: a FETCH_ERROR is worth retrying fast (it heals the
+ * moment connectivity returns), whereas STALE means the upstream sensor is down and hammering it
+ * won't help — the normal periodic cadence will pick it up when the sensor recovers.
+ */
+enum class SourceStatus { OK, STALE, FETCH_ERROR }
+
+/** All display strings the widget renders, plus the per-half fetch outcomes. */
 data class WidgetData(
     val place: String,
     // LEFT (forecast) — Skyes Above multi-source, for the phone's current location
@@ -32,8 +48,15 @@ data class WidgetData(
     // RIGHT (HOME) — WU station IKILLI35
     val temp: String, val humidity: String,
     val feels: String, val feelsEmoji: String,
-    val pressure: String
-)
+    val pressure: String,
+    // Per-half outcomes: drive the "!" indicators and the scheduler's retry decision.
+    val forecast: SourceStatus = SourceStatus.OK,
+    val home: SourceStatus = SourceStatus.OK
+) {
+    /** True if either half could not be REACHED this cycle (network) — worth a fast retry. */
+    val anyFetchError: Boolean
+        get() = forecast == SourceStatus.FETCH_ERROR || home == SourceStatus.FETCH_ERROR
+}
 
 /** Builds a WidgetData: forecast from Skyes Above's WeatherRepository, home from the WU station. */
 object WidgetRepo {
@@ -45,6 +68,8 @@ object WidgetRepo {
         // deliberately do NOT retain last-good values and cache NOTHING — a blank/"—"
         // field is the signal that the pipeline (Pi -> WU, or the forecast source) is
         // broken, which is exactly what the user wants to be able to see at a glance.
+        // When a half is not live we additionally raise a "!" flag (see SourceStatus) so the
+        // failure is obvious at a glance, and the scheduler keeps retrying until it heals.
         val ep = EntryPointAccessors.fromApplication(
             context.applicationContext, WidgetEntryPoint::class.java
         )
@@ -53,20 +78,33 @@ object WidgetRepo {
         // LEFT half — live multi-source forecast for the current location; "—" on any failure.
         var areaTemp = NO_DATA; var rain = NO_DATA
         var windValue = NO_DATA; var windUnit = "km/h"; var todayEmoji = NO_DATA
+        var forecastStatus = SourceStatus.FETCH_ERROR
         try {
-            val cur = runBlocking { ep.weatherRepository().getWeather(loc.lat, loc.lon) }
-                .getOrNull()?.current
+            val res = runBlocking { ep.weatherRepository().getWeather(loc.lat, loc.lon) }.getOrNull()
+            val cur = res?.current
             if (cur != null) {
-                areaTemp = "${cur.temperature.roundToInt()}°"
+                // Show "now/high" — current temp + today's forecast high (e.g. 23/25°),
+                // so a glance gives both what it is now and where it's heading today.
+                val now = cur.temperature.roundToInt()
+                val today = java.time.LocalDate.now().toString()   // yyyy-MM-dd
+                val high = res.hourly
+                    .filter { it.time.startsWith(today) }
+                    .maxOfOrNull { it.temperature }
+                    ?.roundToInt()
+                areaTemp = if (high != null && high >= now) "$now/$high°" else "$now°"
                 rain = formatPrecip(cur.precipitation)
                 windValue = "${cur.windSpeed.roundToInt()}"
                 windUnit = "km/h " + WindDirectionUtil.degreesToCompassDirection(cur.windDirection.toDouble())
                 todayEmoji = conditionEmoji(cur.description, cur.symbol)
+                forecastStatus = SourceStatus.OK
             } else {
-                Log.w(TAG, "forecast returned null -> NO DATA")
+                // All public sources returned nothing — almost always a reachability problem.
+                Log.w(TAG, "forecast returned null -> NO DATA (!)")
+                forecastStatus = SourceStatus.FETCH_ERROR
             }
         } catch (e: Exception) {
-            Log.w(TAG, "forecast fetch failed -> NO DATA", e)
+            Log.w(TAG, "forecast fetch failed -> NO DATA (!)", e)
+            forecastStatus = SourceStatus.FETCH_ERROR
         }
 
         // RIGHT half — the user's own WU HOME station. WuStation.fetch() THROWS unless the
@@ -74,24 +112,67 @@ object WidgetRepo {
         // pipeline shows "—" rather than a stuck stale reading.
         var temp = NO_DATA; var humidity = NO_DATA
         var feels = NO_DATA; var feelsEmoji = NO_DATA; var pressure = NO_DATA
+        var homeStatus = SourceStatus.FETCH_ERROR
         try {
             val h = WuStation.fetch()
             temp = h.temp; humidity = h.humidity; feels = h.feels; feelsEmoji = h.feelsEmoji; pressure = h.pressure
+            homeStatus = SourceStatus.OK
+        } catch (e: WuStation.StaleObsException) {
+            // Reached WU, but the observation is old => the Pi/garden pipeline is down.
+            Log.w(TAG, "WU obs stale (${e.ageSec}s) -> NO DATA (!) — Pi likely down")
+            homeStatus = SourceStatus.STALE
         } catch (e: Exception) {
-            Log.w(TAG, "WU station stale/failed -> NO DATA", e)
+            Log.w(TAG, "WU station unreachable -> NO DATA (!)", e)
+            homeStatus = SourceStatus.FETCH_ERROR
         }
+
+        Log.i(
+            TAG,
+            "refresh done net=${networkState(context)} place='${loc.name}' " +
+                "forecast=$forecastStatus home=$homeStatus"
+        )
 
         return WidgetData(
             place = loc.name,
             areaTemp = areaTemp, rain = rain, windValue = windValue, windUnit = windUnit, todayEmoji = todayEmoji,
-            temp = temp, humidity = humidity, feels = feels, feelsEmoji = feelsEmoji, pressure = pressure
+            temp = temp, humidity = humidity, feels = feels, feelsEmoji = feelsEmoji, pressure = pressure,
+            forecast = forecastStatus, home = homeStatus
         )
     }
 
-    /** Follow the phone's location if we have it; else the app's stored location; else Killiney. */
+    /** Coarse connectivity label for the diagnostic log (WIFI / CELLULAR / OTHER / NONE). */
+    private fun networkState(context: Context): String {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return "UNKNOWN"
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return "NONE"
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "CELLULAR"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
+            else -> "OTHER"
+        }
+    }
+
+    /**
+     * Resolve the location to report for, in priority order:
+     *   1. A fresh live fix (and persist it as the new last-good).
+     *   2. The last SUCCESSFULLY-resolved fix (self-heals a transient GPS/permission failure).
+     *   3. The app's stored/settings location.
+     *   4. Killiney (hard default).
+     * Note: this caches *location*, never weather values.
+     */
     private fun resolveLocation(context: Context, ep: WidgetEntryPoint): LocResult {
         freshLocation(context)?.let {
-            return LocResult(it.latitude, it.longitude, placeName(context, it.latitude, it.longitude))
+            val name = placeName(context, it.latitude, it.longitude)
+            runCatching {
+                runBlocking { ep.settingsDataStore().setLastKnownLocation(it.latitude, it.longitude, name) }
+            }
+            return LocResult(it.latitude, it.longitude, name)
+        }
+        // No live fix — reuse the last good one before falling back to defaults.
+        runCatching { runBlocking { ep.settingsDataStore().lastKnownLocation.first() } }.getOrNull()?.let {
+            Log.i(TAG, "no live fix -> reusing last-good location '${it.name}'")
+            return LocResult(it.latitude, it.longitude, it.name)
         }
         return try {
             val s = runBlocking { ep.settingsDataStore().settings.first() }
@@ -214,10 +295,15 @@ object WuStation {
         val feels: String, val feelsEmoji: String, val pressure: String
     )
 
+    /** Thrown when WU IS reachable but the latest observation is older than the freshness
+     *  window — i.e. the Pi stopped uploading. Distinct from a network/HTTP failure so the
+     *  scheduler can tell "sensor down" (don't hammer) from "unreachable" (retry fast). */
+    class StaleObsException(val ageSec: Long) : RuntimeException("stale WU obs (age=${ageSec}s > ${STALE_SEC}s)")
+
     /** Fetch the CURRENT observation, but only if it is FRESH. WU keeps returning the last
      *  observation after the Pi stops uploading, so a stale obs (older than STALE_SEC) is
-     *  rejected (throws) and the widget shows NO DATA instead of a stuck reading. A small
-     *  retry rides out transient network blips. */
+     *  rejected (throws StaleObsException) and the widget shows NO DATA instead of a stuck
+     *  reading. A small retry rides out transient network blips. */
     fun fetch(): Home {
         val url = "https://api.weather.com/v2/pws/observations/current" +
             "?stationId=$STATION&format=json&units=m&apiKey=$KEY"
@@ -229,7 +315,7 @@ object WuStation {
                 val obsEpoch = obs.optLong("epoch", 0L)
                 val ageSec = System.currentTimeMillis() / 1000L - obsEpoch
                 if (obsEpoch <= 0L || ageSec > STALE_SEC)
-                    throw RuntimeException("stale WU obs (age=${ageSec}s > ${STALE_SEC}s)")
+                    throw StaleObsException(ageSec)
                 val m = obs.getJSONObject("metric")
                 val t = m.getDouble("temp")
                 val heat = m.optDouble("heatIndex", t)
@@ -249,9 +335,11 @@ object WuStation {
                     feelsEmoji = feelsEmoji,
                     pressure = if (press.isNaN()) "—" else "${press.roundToInt()}"
                 )
+            } catch (e: StaleObsException) {
+                throw e   // reaching WU worked; retrying won't un-stale the obs — surface it now
             } catch (e: Exception) {
                 last = e
-                if (attempt == 0) Thread.sleep(1500)
+                if (attempt == 0) Thread.sleep(1500)   // ride out a transient network blip
             }
         }
         throw last ?: RuntimeException("WU fetch failed")

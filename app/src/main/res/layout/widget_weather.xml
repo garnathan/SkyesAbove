@@ -12,20 +12,37 @@
     android:paddingLeft="11dp" android:paddingRight="11dp"
     android:paddingTop="6dp" android:paddingBottom="6dp">
 
-    <!-- header: place (left half) | HOME (right half) -->
+    <!-- header: place [!] (left half) | HOME [!] (right half). The "!" flags a half whose
+         data is NOT live this refresh (stale or unreachable); GONE when the half is OK. -->
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="horizontal">
-        <TextView android:id="@+id/place_lbl"
-            android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="2"
-            android:paddingStart="5dp" android:text="FORECAST" android:maxLines="1" android:ellipsize="end"
-            android:textColor="#F2FFFFFF" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.12"
-            android:shadowColor="#99000000" android:shadowDx="0" android:shadowDy="1" android:shadowRadius="3" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="2"
+            android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="5dp">
+            <TextView android:id="@+id/place_lbl"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="FORECAST" android:maxLines="1" android:ellipsize="end"
+                android:textColor="#F2FFFFFF" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.12"
+                android:shadowColor="#99000000" android:shadowDx="0" android:shadowDy="1" android:shadowRadius="3" />
+            <TextView android:id="@+id/fc_warn"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="4dp" android:text="!" android:visibility="gone"
+                android:textColor="#FFD54F" android:textSize="10sp" android:textStyle="bold"
+                android:shadowColor="#99000000" android:shadowDx="0" android:shadowDy="1" android:shadowRadius="3" />
+        </LinearLayout>
         <FrameLayout android:layout_width="1dp" android:layout_height="wrap_content" />
-        <TextView
-            android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="2"
-            android:paddingStart="10dp" android:text="HOME" android:maxLines="1"
-            android:textColor="#F2FFFFFF" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.12"
-            android:shadowColor="#99000000" android:shadowDx="0" android:shadowDy="1" android:shadowRadius="3" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="2"
+            android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="10dp">
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="HOME" android:maxLines="1"
+                android:textColor="#F2FFFFFF" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.12"
+                android:shadowColor="#99000000" android:shadowDx="0" android:shadowDy="1" android:shadowRadius="3" />
+            <TextView android:id="@+id/home_warn"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="4dp" android:text="!" android:visibility="gone"
+                android:textColor="#FFD54F" android:textSize="10sp" android:textStyle="bold"
+                android:shadowColor="#99000000" android:shadowDx="0" android:shadowDy="1" android:shadowRadius="3" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- ROW 1: A1 area-temp · B1 rain || C1 temp · D1 humidity -->
@@ -36,7 +53,7 @@
             android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="5dp">
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🌡️" android:textSize="15sp" />
             <TextView android:id="@+id/area_temp" android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_marginStart="5dp" android:text="—" android:textColor="#FFFFFFFF" android:textSize="20sp"
+                android:layout_marginStart="5dp" android:text="—" android:textColor="#FFFFFFFF" android:textSize="16sp"
                 android:textStyle="bold" android:maxLines="1" android:includeFontPadding="false" android:fontFeatureSettings="tnum"
                 android:shadowColor="#99000000" android:shadowDx="0" android:shadowDy="1" android:shadowRadius="3" />
         </LinearLayout>
