@@ -119,12 +119,15 @@ class WeatherRepository @Inject constructor(
         // Merge current weather from all available sources
         val mergedCurrent = WeatherData(
             time = sources.first().current.time,
-            temperature = averageMultiple(sources.map { it.current.temperature }),
+            // Temperature/pressure/humidity: a source that lacks the field reports 0.0/0 as a
+            // "missing" sentinel (same convention as mergeCurrentWeather). Averaging that in
+            // halves the real value (e.g. (24+0)/2=12), so drop zeros when a real value exists.
+            temperature = averageMeaningful(sources.map { it.current.temperature }),
             windSpeed = averageMultiple(sources.map { it.current.windSpeed }),
             windDirection = averageMultipleInt(sources.map { it.current.windDirection }),
-            humidity = averageMultipleInt(sources.map { it.current.humidity }),
+            humidity = averageMeaningfulInt(sources.map { it.current.humidity }),
             cloudCover = averageMultipleInt(sources.map { it.current.cloudCover }),
-            pressure = averageMultiple(sources.map { it.current.pressure }),
+            pressure = averageMeaningful(sources.map { it.current.pressure }),
             precipitation = averageMultiple(sources.map { it.current.precipitation }),
             symbol = metEireann?.current?.symbol ?: openMeteo?.current?.symbol ?: openWeatherMap?.current?.symbol ?: "",
             description = metEireann?.current?.description?.ifEmpty { null }
@@ -147,12 +150,15 @@ class WeatherRepository @Inject constructor(
 
             WeatherData(
                 time = dataPoints.first().time,
-                temperature = averageMultiple(dataPoints.map { it.temperature }),
+                // Drop 0.0/0 "missing" sentinels so one source's gap can't halve the reading
+                // (this is what produced a phantom "Today 12°" low). Precip/cloud/wind-dir keep
+                // 0 — there it's a real value, not a sentinel.
+                temperature = averageMeaningful(dataPoints.map { it.temperature }),
                 windSpeed = averageMultiple(dataPoints.map { it.windSpeed }),
                 windDirection = averageMultipleInt(dataPoints.map { it.windDirection }),
-                humidity = averageMultipleInt(dataPoints.map { it.humidity }),
+                humidity = averageMeaningfulInt(dataPoints.map { it.humidity }),
                 cloudCover = averageMultipleInt(dataPoints.map { it.cloudCover }),
-                pressure = averageMultiple(dataPoints.map { it.pressure }),
+                pressure = averageMeaningful(dataPoints.map { it.pressure }),
                 precipitation = averageMultiple(dataPoints.map { it.precipitation }),
                 symbol = dataPoints.firstOrNull { it.symbol.isNotEmpty() }?.symbol ?: "",
                 description = dataPoints.firstOrNull { it.description.isNotEmpty() }?.description ?: ""
@@ -168,6 +174,25 @@ class WeatherRepository @Inject constructor(
 
     private fun averageMultipleInt(values: List<Int>): Int {
         return if (values.isEmpty()) 0 else values.sum() / values.size
+    }
+
+    /**
+     * Average, treating 0.0 as a "missing" sentinel: average only the non-zero values when any
+     * exist (so a source without this field can't drag the mean down). Falls back to 0.0 only if
+     * every source is missing it. Use for temperature/pressure/humidity — NOT precipitation,
+     * cloud cover or wind direction, where 0 is a genuine reading.
+     */
+    private fun averageMeaningful(values: List<Double>): Double {
+        val real = values.filter { it != 0.0 }
+        return when {
+            real.isNotEmpty() -> real.sum() / real.size
+            else -> 0.0
+        }
+    }
+
+    private fun averageMeaningfulInt(values: List<Int>): Int {
+        val real = values.filter { it != 0 }
+        return if (real.isNotEmpty()) real.sum() / real.size else 0
     }
 
     /**
