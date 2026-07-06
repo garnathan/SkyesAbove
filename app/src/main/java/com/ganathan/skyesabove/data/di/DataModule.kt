@@ -1,12 +1,14 @@
 package com.ganathan.skyesabove.data.di
 
 import android.content.Context
+import com.ganathan.skyesabove.data.api.GardenHistoryApi
 import com.ganathan.skyesabove.data.api.MetEireannApi
 import com.ganathan.skyesabove.data.api.MetEireannObservationsApi
 import com.ganathan.skyesabove.data.api.OpenMeteoApi
 import com.ganathan.skyesabove.data.api.OpenWeatherMapApi
 import com.ganathan.skyesabove.data.api.SunriseSunsetApi
 import com.ganathan.skyesabove.data.preferences.SettingsDataStore
+import com.ganathan.skyesabove.data.repository.GardenHistoryRepository
 import com.ganathan.skyesabove.data.repository.WeatherRepository
 import dagger.Module
 import dagger.Provides
@@ -161,6 +163,38 @@ object DataModule {
     @Singleton
     fun provideOpenWeatherMapApi(@Named("OpenWeatherMap") retrofit: Retrofit): OpenWeatherMapApi {
         return retrofit.create(OpenWeatherMapApi::class.java)
+    }
+
+    /**
+     * Provides Retrofit instance for the garden-sensor GitHub history (raw.githubusercontent.com).
+     */
+    @Provides
+    @Singleton
+    @Named("GardenHistory")
+    fun provideGardenHistoryRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(GardenHistoryApi.BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    /**
+     * Provides Garden History API interface.
+     */
+    @Provides
+    @Singleton
+    fun provideGardenHistoryApi(@Named("GardenHistory") retrofit: Retrofit): GardenHistoryApi {
+        return retrofit.create(GardenHistoryApi::class.java)
+    }
+
+    /**
+     * Provides GardenHistoryRepository.
+     */
+    @Provides
+    @Singleton
+    fun provideGardenHistoryRepository(api: GardenHistoryApi): GardenHistoryRepository {
+        return GardenHistoryRepository(api)
     }
 
     /**

@@ -1,0 +1,102 @@
+package com.ganathan.skyesabove.data.model
+
+import com.ganathan.skyesabove.data.preferences.TemperatureUnit
+
+/**
+ * One garden-sensor observation, parsed from a row of the Pi's monthly CSV
+ * (`data/YYYY-MM.csv` in garnathan/wunderground-killi). Values are stored in their
+ * canonical units (°C, %, mbar); unit conversion happens at display time.
+ */
+data class SensorReading(
+    val epochSec: Long,
+    val temperatureC: Double?,
+    val humidityPct: Double?,
+    val pressureMbar: Double?,     // sea-level (matches the widget's HOME pressure)
+    val dewPointC: Double?,
+    val heatIndexC: Double?
+)
+
+/**
+ * A garden-sensor metric that can be trended. [extract] pulls the value (in display units)
+ * from a [SensorReading], honoring the user's temperature-unit preference for temp-like metrics.
+ */
+enum class TrendMetric(
+    val label: String,
+    val emoji: String,
+    val fractionDigits: Int
+) {
+    TEMPERATURE("Temperature", "🌡️", 1) {
+        override fun extract(r: SensorReading, unit: TemperatureUnit) = convertTemp(r.temperatureC, unit)
+        override fun unitLabel(unit: TemperatureUnit) = tempUnitLabel(unit)
+    },
+    FEELS("Feels", "🥵", 1) {
+        override fun extract(r: SensorReading, unit: TemperatureUnit) = convertTemp(r.heatIndexC, unit)
+        override fun unitLabel(unit: TemperatureUnit) = tempUnitLabel(unit)
+    },
+    HUMIDITY("Humidity", "💧", 0) {
+        override fun extract(r: SensorReading, unit: TemperatureUnit) = r.humidityPct
+        override fun unitLabel(unit: TemperatureUnit) = "%"
+    },
+    PRESSURE("Pressure", "🧭", 0) {
+        override fun extract(r: SensorReading, unit: TemperatureUnit) = r.pressureMbar
+        override fun unitLabel(unit: TemperatureUnit) = "mb"
+    },
+    DEW_POINT("Dew point", "💦", 1) {
+        override fun extract(r: SensorReading, unit: TemperatureUnit) = convertTemp(r.dewPointC, unit)
+        override fun unitLabel(unit: TemperatureUnit) = tempUnitLabel(unit)
+    };
+
+    /** Value in display units, or null if this reading lacks the metric. */
+    abstract fun extract(r: SensorReading, unit: TemperatureUnit): Double?
+
+    abstract fun unitLabel(unit: TemperatureUnit): String
+
+    companion object {
+        private fun convertTemp(celsius: Double?, unit: TemperatureUnit): Double? = when {
+            celsius == null -> null
+            unit == TemperatureUnit.FAHRENHEIT -> celsius * 9.0 / 5.0 + 32.0
+            else -> celsius
+        }
+
+        private fun tempUnitLabel(unit: TemperatureUnit) =
+            if (unit == TemperatureUnit.FAHRENHEIT) "°F" else "°C"
+    }
+}
+
+/**
+ * A trend time window. [windowSeconds] is the look-back from now; [bucketSeconds] is the
+ * down-sample bucket used to keep the plotted line readable (stats are computed on raw points).
+ */
+enum class TrendRange(
+    val label: String,
+    val windowSeconds: Long,
+    val bucketSeconds: Long
+) {
+    HOUR("Hour", 60L * 60, 0L),                    // ~12 raw points @5min — no down-sampling
+    DAY("Day", 24L * 60 * 60, 10L * 60),           // 10-min buckets
+    WEEK("Week", 7L * 24 * 60 * 60, 60L * 60),     // hourly
+    MONTH("Month", 30L * 24 * 60 * 60, 3L * 60 * 60),   // 3-hourly
+    YEAR("Year", 365L * 24 * 60 * 60, 24L * 60 * 60);   // daily
+}
+
+/** A single plotted point (epoch seconds + value in display units). */
+data class TrendPoint(val epochSec: Long, val value: Double)
+
+/** Summary statistics over the raw (un-bucketed) readings in the window. */
+data class TrendStats(
+    val current: Double,
+    val min: Double,
+    val max: Double,
+    val average: Double,
+    val sampleCount: Int
+)
+
+/** Everything the Trends chart needs for one (metric, range) selection. */
+data class TrendSeries(
+    val metric: TrendMetric,
+    val range: TrendRange,
+    val unitLabel: String,
+    val points: List<TrendPoint>,     // down-sampled, chronological
+    val stats: TrendStats?,           // null when there are no readings
+    val lastUpdatedEpochSec: Long?
+)
