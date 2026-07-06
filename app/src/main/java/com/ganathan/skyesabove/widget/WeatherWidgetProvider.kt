@@ -52,10 +52,11 @@ class WeatherWidgetProvider : AppWidgetProvider() {
         val pending = goAsync()
         Thread {
             val views = try {
-                // load() fetches AND persists last-good per-source (no cache poisoning on failure)
+                // load() returns live values or "—" per source and does NOT throw on a data
+                // failure, so this catch only fires on an unexpected error -> show NO DATA.
                 buildViews(context, WidgetRepo.load(context))
             } catch (e: Exception) {
-                buildViewsFromCache(context)
+                buildNoData(context)
             }
             for (id in ids) mgr.updateAppWidget(id, views)
             pending.finish()
@@ -85,22 +86,16 @@ class WeatherWidgetProvider : AppWidgetProvider() {
         return v
     }
 
-    private fun buildViewsFromCache(context: Context): RemoteViews {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        fun g(k: String, dft: String): String = p.getString("c_$k", dft) ?: dft
-        return buildViews(
-            context,
-            WidgetData(
-                place = g("place", "—"),
-                areaTemp = g("areaTemp", "—"), rain = g("rain", "—"),
-                windValue = g("windValue", "—"), windUnit = g("windUnit", "km/h"),
-                todayEmoji = g("todayEmoji", "⛅"),
-                temp = g("temp", "—"), humidity = g("humidity", "—"),
-                feels = g("feels", "—"), feelsEmoji = g("feelsEmoji", "🌡️"),
-                pressure = g("pressure", "—")
-            )
+    /** All-"—" NO DATA view. Shown only if load() throws unexpectedly. We never render
+     *  stale cached values — no data is the deliberate signal that something upstream broke. */
+    private fun buildNoData(context: Context): RemoteViews = buildViews(
+        context,
+        WidgetData(
+            place = "—",
+            areaTemp = "—", rain = "—", windValue = "—", windUnit = "km/h", todayEmoji = "—",
+            temp = "—", humidity = "—", feels = "—", feelsEmoji = "—", pressure = "—"
         )
-    }
+    )
 
     private fun alarmPi(context: Context): PendingIntent {
         val i = Intent(context, WeatherWidgetProvider::class.java).setAction(ACTION_REFRESH)

@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
 private const val TAG = "SkyesWidget"
+private const val NO_DATA = "—"   // shown whenever a value is NOT live/fresh (never stale cache)
 
 /** All display strings the widget renders. */
 data class WidgetData(
@@ -40,20 +41,18 @@ object WidgetRepo {
     private data class LocResult(val lat: Double, val lon: Double, val name: String)
 
     fun load(context: Context): WidgetData {
-        // Start from the last-good cache so a FAILED fetch keeps the previous values on screen
-        // instead of regressing to "—". Each source only overwrites its fields on success.
-        val prefs = context.getSharedPreferences(WeatherWidgetProvider.PREFS, Context.MODE_PRIVATE)
-        fun cached(k: String, dft: String) = prefs.getString("c_$k", dft) ?: dft
-
+        // REAL-TIME ONLY: every value is either live-this-refresh or "—" (NO DATA). We
+        // deliberately do NOT retain last-good values and cache NOTHING — a blank/"—"
+        // field is the signal that the pipeline (Pi -> WU, or the forecast source) is
+        // broken, which is exactly what the user wants to be able to see at a glance.
         val ep = EntryPointAccessors.fromApplication(
             context.applicationContext, WidgetEntryPoint::class.java
         )
         val loc = resolveLocation(context, ep)
 
-        // LEFT half — multi-source forecast for the current location
-        var areaTemp = cached("areaTemp", "—"); var rain = cached("rain", "—")
-        var windValue = cached("windValue", "—"); var windUnit = cached("windUnit", "km/h")
-        var todayEmoji = cached("todayEmoji", "⛅")
+        // LEFT half — live multi-source forecast for the current location; "—" on any failure.
+        var areaTemp = NO_DATA; var rain = NO_DATA
+        var windValue = NO_DATA; var windUnit = "km/h"; var todayEmoji = NO_DATA
         try {
             val cur = runBlocking { ep.weatherRepository().getWeather(loc.lat, loc.lon) }
                 .getOrNull()?.current
@@ -64,39 +63,26 @@ object WidgetRepo {
                 windUnit = "km/h " + WindDirectionUtil.degreesToCompassDirection(cur.windDirection.toDouble())
                 todayEmoji = conditionEmoji(cur.description, cur.symbol)
             } else {
-                Log.w(TAG, "forecast returned null — keeping last-good")
+                Log.w(TAG, "forecast returned null -> NO DATA")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "forecast fetch failed — keeping last-good", e)
+            Log.w(TAG, "forecast fetch failed -> NO DATA", e)
         }
 
-        // RIGHT half — the user's own WU station
-        var temp = cached("temp", "—"); var humidity = cached("humidity", "—")
-        var feels = cached("feels", "—"); var feelsEmoji = cached("feelsEmoji", "🌡️")
-        var pressure = cached("pressure", "—")
+        // RIGHT half — the user's own WU HOME station. WuStation.fetch() THROWS unless the
+        // observation is FRESH (WU keeps serving the last obs after the Pi dies), so a dead
+        // pipeline shows "—" rather than a stuck stale reading.
+        var temp = NO_DATA; var humidity = NO_DATA
+        var feels = NO_DATA; var feelsEmoji = NO_DATA; var pressure = NO_DATA
         try {
             val h = WuStation.fetch()
             temp = h.temp; humidity = h.humidity; feels = h.feels; feelsEmoji = h.feelsEmoji; pressure = h.pressure
         } catch (e: Exception) {
-            Log.w(TAG, "WU station fetch failed — keeping last-good", e)
+            Log.w(TAG, "WU station stale/failed -> NO DATA", e)
         }
 
-        // Keep the last-good place name if geocoding fell back to the generic label.
-        val place = if (loc.name == "Current location") cached("place", loc.name) else loc.name
-
-        // Persist the freshest-available values (never "—" once we've had one success).
-        prefs.edit()
-            .putString("c_place", place)
-            .putString("c_areaTemp", areaTemp).putString("c_rain", rain)
-            .putString("c_windValue", windValue).putString("c_windUnit", windUnit)
-            .putString("c_todayEmoji", todayEmoji)
-            .putString("c_temp", temp).putString("c_humidity", humidity)
-            .putString("c_feels", feels).putString("c_feelsEmoji", feelsEmoji)
-            .putString("c_pressure", pressure)
-            .apply()
-
         return WidgetData(
-            place = place,
+            place = loc.name,
             areaTemp = areaTemp, rain = rain, windValue = windValue, windUnit = windUnit, todayEmoji = todayEmoji,
             temp = temp, humidity = humidity, feels = feels, feelsEmoji = feelsEmoji, pressure = pressure
         )
@@ -220,6 +206,7 @@ object WidgetRepo {
 /** The user's home Weather Underground PWS (IKILLI35) — the right half of the widget. */
 object WuStation {
     private const val STATION = "IKILLI35"
+    private const val STALE_SEC = 15L * 60L      // reject a WU obs older than 15 min => Pi likely down => NO DATA
     private val KEY = com.ganathan.skyesabove.BuildConfig.WU_API_KEY
 
     data class Home(
@@ -227,7 +214,10 @@ object WuStation {
         val feels: String, val feelsEmoji: String, val pressure: String
     )
 
-    /** Fetch with a small retry to ride out transient network blips. */
+    /** Fetch the CURRENT observation, but only if it is FRESH. WU keeps returning the last
+     *  observation after the Pi stops uploading, so a stale obs (older than STALE_SEC) is
+     *  rejected (throws) and the widget shows NO DATA instead of a stuck reading. A small
+     *  retry rides out transient network blips. */
     fun fetch(): Home {
         val url = "https://api.weather.com/v2/pws/observations/current" +
             "?stationId=$STATION&format=json&units=m&apiKey=$KEY"
@@ -235,6 +225,11 @@ object WuStation {
         for (attempt in 0 until 2) {
             try {
                 val obs = JSONObject(httpGet(url)).getJSONArray("observations").getJSONObject(0)
+                // REAL-TIME GUARD: reject a stale observation (a dead Pi -> WU serves its last one).
+                val obsEpoch = obs.optLong("epoch", 0L)
+                val ageSec = System.currentTimeMillis() / 1000L - obsEpoch
+                if (obsEpoch <= 0L || ageSec > STALE_SEC)
+                    throw RuntimeException("stale WU obs (age=${ageSec}s > ${STALE_SEC}s)")
                 val m = obs.getJSONObject("metric")
                 val t = m.getDouble("temp")
                 val heat = m.optDouble("heatIndex", t)
