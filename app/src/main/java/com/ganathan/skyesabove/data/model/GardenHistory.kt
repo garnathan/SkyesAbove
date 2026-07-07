@@ -79,6 +79,53 @@ enum class TrendRange(
     YEAR("Year", 365L * 24 * 60 * 60, 24L * 60 * 60);   // daily
 }
 
+/**
+ * 3-hour pressure tendency — the direction (and speed) a barometer is moving, which forecasts
+ * the next several hours better than the absolute value. Classified from the change per 3h with
+ * a ~1 hPa dead-band so the daily atmospheric "breathing" (~1 hPa diurnal oscillation) doesn't
+ * trigger a false arrow.
+ */
+enum class PressureTendency(val arrow: String, val label: String, val rising: Boolean?) {
+    RISING_FAST("▲▲", "rising fast", true),
+    RISING("▲", "rising", true),
+    STEADY("→", "steady", null),
+    FALLING("▼", "falling", false),
+    FALLING_FAST("▼▼", "falling fast", false);
+
+    companion object {
+        /** @param deltaPer3h pressure change over 3 hours, in hPa/mbar. */
+        fun classify(deltaPer3h: Double): PressureTendency = when {
+            deltaPer3h >= 3.5 -> RISING_FAST
+            deltaPer3h >= 1.0 -> RISING
+            deltaPer3h <= -3.5 -> FALLING_FAST
+            deltaPer3h <= -1.0 -> FALLING
+            else -> STEADY
+        }
+    }
+}
+
+/**
+ * The low→high sea-level pressure scale (hPa/mbar). Anchored on 1013 (standard atmosphere);
+ * the [MIN]..[MAX] span covers the real-world extremes you'd ever glance at.
+ */
+object PressureScale {
+    const val MIN = 960.0    // deep low / stormy
+    const val MAX = 1060.0   // strong high / very settled
+
+    /** 0f (low) .. 1f (high) position of a reading on the scale. */
+    fun position(mbar: Double): Float =
+        ((mbar - MIN) / (MAX - MIN)).coerceIn(0.0, 1.0).toFloat()
+
+    /** Plain-language band for a reading (classic barometer wording). */
+    fun descriptor(mbar: Double): String = when {
+        mbar < 985 -> "Stormy"
+        mbar < 1000 -> "Rain"
+        mbar < 1015 -> "Changeable"
+        mbar < 1030 -> "Fair"
+        else -> "Very dry"
+    }
+}
+
 /** A single plotted point (epoch seconds + value in display units). */
 data class TrendPoint(val epochSec: Long, val value: Double)
 
@@ -98,5 +145,6 @@ data class TrendSeries(
     val unitLabel: String,
     val points: List<TrendPoint>,     // down-sampled, chronological
     val stats: TrendStats?,           // null when there are no readings
-    val lastUpdatedEpochSec: Long?
+    val lastUpdatedEpochSec: Long?,
+    val tendency: PressureTendency? = null   // pressure only; 3h barometric trend
 )

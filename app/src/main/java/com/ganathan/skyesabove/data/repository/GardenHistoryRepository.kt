@@ -2,6 +2,7 @@ package com.ganathan.skyesabove.data.repository
 
 import android.util.Log
 import com.ganathan.skyesabove.data.api.GardenHistoryApi
+import com.ganathan.skyesabove.data.model.PressureTendency
 import com.ganathan.skyesabove.data.model.SensorReading
 import com.ganathan.skyesabove.data.model.TrendMetric
 import com.ganathan.skyesabove.data.model.TrendPoint
@@ -56,9 +57,12 @@ class GardenHistoryRepository @Inject constructor(
         val nowSec = nowMs / 1000L
         val startSec = nowSec - range.windowSeconds
 
-        val readings = loadReadings(startSec, nowSec)
-            .filter { it.epochSec in startSec..nowSec }
+        // Load enough to cover both the range window AND the last 3h (for the tendency), even
+        // when the range is shorter than 3h (e.g. "Hour"). loadReadings returns whole month
+        // files, so this only widens which months are fetched — usually none.
+        val allReadings = loadReadings(minOf(startSec, nowSec - TENDENCY_WINDOW_SEC), nowSec)
             .sortedBy { it.epochSec }
+        val readings = allReadings.filter { it.epochSec in startSec..nowSec }
 
         // Pair each reading with its metric value (in display units), dropping nulls.
         val valued = readings.mapNotNull { r ->
@@ -82,8 +86,37 @@ class GardenHistoryRepository @Inject constructor(
             unitLabel = metric.unitLabel(unit),
             points = downsample(valued, range.bucketSeconds),
             stats = stats,
-            lastUpdatedEpochSec = readings.lastOrNull()?.epochSec
+            lastUpdatedEpochSec = readings.lastOrNull()?.epochSec,
+            tendency = if (metric == TrendMetric.PRESSURE) tendencyFrom(allReadings, nowSec) else null
         )
+    }
+
+    /**
+     * The 3-hour barometric tendency (for the widget's arrow), independent of any chart range.
+     * Returns null if we can't establish a meaningful recent trend.
+     */
+    suspend fun pressureTendency(nowMs: Long = System.currentTimeMillis()): PressureTendency? =
+        withContext(Dispatchers.IO) {
+            val nowSec = nowMs / 1000L
+            tendencyFrom(loadReadings(nowSec - TENDENCY_WINDOW_SEC, nowSec), nowSec)
+        }
+
+    /**
+     * Compute the pressure tendency from the last 3h of readings, normalised to a per-3h rate
+     * (so a partial window still classifies sensibly). Needs ≥2 points spanning ≥1h.
+     */
+    private fun tendencyFrom(readings: List<SensorReading>, nowSec: Long): PressureTendency? {
+        val cutoff = nowSec - TENDENCY_WINDOW_SEC
+        val recent = readings
+            .filter { it.epochSec in cutoff..nowSec && it.pressureMbar != null }
+            .sortedBy { it.epochSec }
+        if (recent.size < 2) return null
+        val first = recent.first()
+        val last = recent.last()
+        val spanSec = (last.epochSec - first.epochSec).toDouble()
+        if (spanSec < 60L * 60) return null   // <1h span — not enough to trust
+        val deltaPer3h = (last.pressureMbar!! - first.pressureMbar!!) * (TENDENCY_WINDOW_SEC / spanSec)
+        return PressureTendency.classify(deltaPer3h)
     }
 
     /** Fetch + cache every month file spanning [startSec, endSec]; merge & de-dupe by epoch. */
@@ -176,5 +209,6 @@ class GardenHistoryRepository @Inject constructor(
     companion object {
         private const val TAG = "GardenHistory"
         private const val CACHE_TTL_MS = 5L * 60 * 1000  // re-fetch a month at most every 5 min
+        private const val TENDENCY_WINDOW_SEC = 3L * 60 * 60   // 3-hour barometric tendency window
     }
 }

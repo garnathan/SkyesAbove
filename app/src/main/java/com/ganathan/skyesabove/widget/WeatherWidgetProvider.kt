@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.ganathan.skyesabove.data.preferences.SettingsDataStore
+import com.ganathan.skyesabove.data.repository.GardenHistoryRepository
 import com.ganathan.skyesabove.data.repository.WeatherRepository
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -18,6 +19,7 @@ import dagger.hilt.components.SingletonComponent
 interface WidgetEntryPoint {
     fun weatherRepository(): WeatherRepository
     fun settingsDataStore(): SettingsDataStore
+    fun gardenHistoryRepository(): GardenHistoryRepository
 }
 
 /**

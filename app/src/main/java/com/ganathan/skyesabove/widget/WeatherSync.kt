@@ -20,6 +20,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.ganathan.skyesabove.MainActivity
 import com.ganathan.skyesabove.R
+import com.ganathan.skyesabove.data.model.PressureTendency
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
@@ -63,6 +64,17 @@ object WidgetRenderer {
         v.setTextViewText(R.id.feels_ico, d.feelsEmoji)
         v.setTextViewText(R.id.feels, d.feels)
         v.setTextViewText(R.id.pressure, d.pressure)
+
+        // 3-hour barometric tendency arrow: rising => green, falling => amber ("heads up"),
+        // hidden when steady/unknown so it only shows when there's a real trend.
+        val pt = d.pressureTendency
+        if (pt != null && pt != PressureTendency.STEADY) {
+            v.setViewVisibility(R.id.pressure_arrow, View.VISIBLE)
+            v.setTextViewText(R.id.pressure_arrow, pt.arrow)
+            v.setTextColor(R.id.pressure_arrow, if (pt.rising == true) 0xFF81C784.toInt() else 0xFFFF8A65.toInt())
+        } else {
+            v.setViewVisibility(R.id.pressure_arrow, View.GONE)
+        }
 
         // "!" flag per half: shown whenever that side is NOT live this refresh (stale or
         // unreachable). Values still show "—"; the "!" makes the failure obvious at a glance

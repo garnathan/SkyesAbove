@@ -42,6 +42,7 @@ import com.ganathan.skyesabove.data.model.TrendMetric
 import com.ganathan.skyesabove.data.model.TrendRange
 import com.ganathan.skyesabove.data.model.TrendStats
 import com.ganathan.skyesabove.ui.screens.trends.components.LineChart
+import com.ganathan.skyesabove.ui.screens.trends.components.PressureGauge
 import com.ganathan.skyesabove.ui.theme.skyesAboveGradient
 import java.time.Instant
 import java.time.ZoneId
@@ -145,6 +146,16 @@ fun TrendsScreen(
                 stats = uiState.series?.stats,
                 accent = accent
             )
+
+            // Pressure: low→high scale + 3-hour tendency (turns the bare number into meaning).
+            val pStats = uiState.series?.stats
+            if (uiState.metric == TrendMetric.PRESSURE && pStats != null) {
+                Spacer(Modifier.height(14.dp))
+                PressureGauge(
+                    pressureMbar = pStats.current,
+                    tendency = uiState.series?.tendency
+                )
+            }
 
             Spacer(Modifier.height(12.dp))
 

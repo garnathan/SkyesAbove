@@ -10,6 +10,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
+import com.ganathan.skyesabove.data.model.PressureTendency
 import com.ganathan.skyesabove.ui.util.WindDirectionUtil
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.flow.first
@@ -49,6 +50,8 @@ data class WidgetData(
     val temp: String, val humidity: String,
     val feels: String, val feelsEmoji: String,
     val pressure: String,
+    // 3-hour barometric tendency arrow next to the pressure (null => hide).
+    val pressureTendency: PressureTendency? = null,
     // Per-half outcomes: drive the "!" indicators and the scheduler's retry decision.
     val forecast: SourceStatus = SourceStatus.OK,
     val home: SourceStatus = SourceStatus.OK
@@ -126,16 +129,23 @@ object WidgetRepo {
             homeStatus = SourceStatus.FETCH_ERROR
         }
 
+        // 3-hour barometric tendency (arrow next to pressure). Only meaningful when the home
+        // pressure is live; computed from the Pi's GitHub history (clean 5-min series).
+        val pressureTendency = if (homeStatus == SourceStatus.OK) {
+            runCatching { runBlocking { ep.gardenHistoryRepository().pressureTendency() } }.getOrNull()
+        } else null
+
         Log.i(
             TAG,
             "refresh done net=${networkState(context)} place='${loc.name}' " +
-                "forecast=$forecastStatus home=$homeStatus"
+                "forecast=$forecastStatus home=$homeStatus tendency=$pressureTendency"
         )
 
         return WidgetData(
             place = loc.name,
             areaTemp = areaTemp, rain = rain, windValue = windValue, windUnit = windUnit, todayEmoji = todayEmoji,
             temp = temp, humidity = humidity, feels = feels, feelsEmoji = feelsEmoji, pressure = pressure,
+            pressureTendency = pressureTendency,
             forecast = forecastStatus, home = homeStatus
         )
     }
