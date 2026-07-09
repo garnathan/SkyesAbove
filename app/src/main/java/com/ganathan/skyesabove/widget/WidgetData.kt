@@ -24,6 +24,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.roundToInt
 
 private const val TAG = "SkyesWidget"
@@ -115,13 +117,18 @@ object WidgetRepo {
         // ROOT-CAUSE FIX for "both halves vanish together": when the phone is associated with a
         // connected-but-dead network (a captive / not-yet-validated Wi-Fi whose DNS is broken),
         // the app resolves every host against that dead network and ALL fetches fail — even
-        // though cellular is up and validated. Pin this refresh's connections to a network that
-        // the system has actually VALIDATED as having working internet, routing around the dead
-        // one. Costs nothing when the default is already good (fast path returns it); no polling.
+        // though cellular is up. Pin this refresh's connections to the best usable network,
+        // routing around the dead default. [pickBestNetwork] prefers a VALIDATED network but, if
+        // none is validated yet, falls back to a connected INTERNET network (cellular-first) —
+        // that fallback is what recovers live data on 5G that the OS hasn't finished validating
+        // (the "blank on 5G, fine on Wi-Fi" case). Costs nothing when the default is already
+        // good; no polling. The bind is process-global and refreshes can overlap (the immediate
+        // paint and the WorkManager worker), so [ProcessNetworkBinding] ref-counts it: first in
+        // binds, last out clears, instead of one refresh's teardown cutting another's fetch.
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        val validated = pickValidatedNetwork(cm)
-        val bound = validated != null && (cm?.bindProcessToNetwork(validated) ?: false)
-        try {
+        val pick = pickBestNetwork(cm)
+        val inventory = networkInventory(cm)
+        return ProcessNetworkBinding.withBinding(cm, pick.network) {
             val loc = resolveLocation(context, ep)
 
             // Which WU station drives the HOME half — configurable in Settings so the app isn't
@@ -159,46 +166,87 @@ object WidgetRepo {
                 DiagEvent(
                     timeMs = startMs, trigger = trigger, net = net,
                     forecast = fc.status.name, home = home.status.name, homeObsAgeSec = home.obsAgeSec,
-                    durationMs = System.currentTimeMillis() - startMs, place = loc.name, error = err
+                    durationMs = System.currentTimeMillis() - startMs, place = loc.name, error = err,
+                    nets = inventory, bind = pick.label
                 )
             )
             Log.i(
                 TAG,
-                "refresh done trig=$trigger net=$net bound=$bound place='${loc.name}' " +
+                "refresh done trig=$trigger net=$net bind=${pick.label} nets=$inventory place='${loc.name}' " +
                     "forecast=${fc.status} home=${home.status} obsAge=${home.obsAgeSec}s tendency=$pressureTendency"
             )
 
-            return WidgetData(
+            // Tail expression of the ProcessNetworkBinding.withBinding block → returned by load().
+            WidgetData(
                 place = loc.name,
                 areaTemp = fc.areaTemp, rain = fc.rain, windValue = fc.windValue, windUnit = fc.windUnit, todayEmoji = fc.todayEmoji,
                 temp = home.temp, humidity = home.humidity, feels = home.feels, feelsEmoji = home.feelsEmoji, pressure = home.pressure,
                 pressureTendency = pressureTendency,
                 forecast = fc.status, home = home.status
             )
-        } finally {
-            // Always release the binding so we don't pin the process to a network that may later
-            // go away; the next refresh re-picks. bindProcessToNetwork(null) restores the default.
-            if (bound) runCatching { cm?.bindProcessToNetwork(null) }
         }
     }
 
+    private data class NetPick(val network: Network?, val label: String)
+
     /**
-     * The best currently-connected network that the system has VALIDATED as having real internet
-     * (and that advertises INTERNET), or null if none. Used to route a refresh around a
-     * connected-but-dead network (captive/broken Wi-Fi) that would otherwise fail DNS for every
-     * host. Fast path: the active default if it's already validated; otherwise scan all networks
-     * (this is how we find validated cellular when the phone is sitting on a dead Wi-Fi).
+     * Choose the best network to pin this refresh to, plus a short label for the diagnostics log.
+     * Enumerates all networks once, maps them to Android-free [NetCandidate]s, and defers the
+     * ranking to the pure, unit-tested [NetworkPicker.rank]:
+     *   1. the active default if the OS has VALIDATED it (the common healthy case);
+     *   2. any other VALIDATED internet network (routes around a dead/captive default Wi-Fi to
+     *      validated cellular);
+     *   3. FALLBACK — any CONNECTED internet network even if NOT yet validated, cellular first.
+     *      This is what recovers live data on 5G whose async VALIDATED probe hasn't finished
+     *      (right after a Wi-Fi->cellular handoff, Doze exit, or a cold broadcast process);
+     *      without it the refresh found no network, never bound, and blanked the widget.
      */
-    private fun pickValidatedNetwork(cm: ConnectivityManager?): Network? {
-        cm ?: return null
-        fun validatedInternet(n: Network?): Boolean {
-            val c = n?.let { cm.getNetworkCapabilities(it) } ?: return false
-            return c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-        }
-        cm.activeNetwork?.let { if (validatedInternet(it)) return it }
+    private fun pickBestNetwork(cm: ConnectivityManager?): NetPick {
+        cm ?: return NetPick(null, "no-cm")
         @Suppress("DEPRECATION")
-        return cm.allNetworks.firstOrNull { validatedInternet(it) }
+        val networks = cm.allNetworks.toList()
+        val active = cm.activeNetwork
+        val candidates = networks.map { n ->
+            val c = cm.getNetworkCapabilities(n)
+            NetCandidate(
+                transport = transportLabel(c),
+                hasInternet = c?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true,
+                validated = c?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+                isDefault = n == active
+            )
+        }
+        val (idx, label) = NetworkPicker.rank(candidates)
+        return NetPick(networks.getOrNull(idx), label)
+    }
+
+    /**
+     * A compact snapshot of every network the system knows about at refresh time, e.g.
+     * "wifi(IV),cell(I)" — I=advertises INTERNET, V=OS-VALIDATED. Recorded in the diagnostics log
+     * so a future field failure PROVES whether a usable network was present but unvalidated (an
+     * app problem the fallback now handles) versus genuinely absent (a real dead-zone → NO DATA is
+     * correct). This is the evidence that distinguishes the two, with no adb attached.
+     */
+    private fun networkInventory(cm: ConnectivityManager?): String {
+        cm ?: return "no-cm"
+        @Suppress("DEPRECATION")
+        val nets = cm.allNetworks
+        if (nets.isEmpty()) return "none"
+        return nets.joinToString(",") { n ->
+            val c = cm.getNetworkCapabilities(n)
+            val flags = buildString {
+                if (c?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true) append("I")
+                if (c?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true) append("V")
+            }
+            transportLabel(c) + if (flags.isEmpty()) "" else "($flags)"
+        }
+    }
+
+    private fun transportLabel(c: NetworkCapabilities?): String = when {
+        c == null -> "oth"
+        c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+        c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+        c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "eth"
+        else -> "oth"
     }
 
     /** LEFT half — live multi-source forecast for the current location; "—" on any failure. */
@@ -478,5 +526,92 @@ object WuStation {
         } finally {
             c.disconnect()
         }
+    }
+}
+
+/**
+ * Reference-counted wrapper over the process-wide `ConnectivityManager.bindProcessToNetwork`.
+ *
+ * `bindProcessToNetwork` is PROCESS-GLOBAL, but widget refreshes overlap: [WeatherWidgetProvider]
+ * `onUpdate` kicks the immediate paint (a background Thread) and the WorkManager worker at the
+ * same instant, and both run [WidgetRepo.load]. Without ref-counting, whichever refresh finished
+ * first would call `bindProcessToNetwork(null)` in its teardown and tear the binding out from
+ * under the other's in-flight fetch — an intermittent, network-dependent failure. Here the first
+ * refresh in sets the binding and the last one out clears it, so overlapping refreshes share it.
+ *
+ * (If two concurrent refreshes somehow pick different networks the first one's binding wins for
+ * the pair; in practice they run milliseconds apart and pick the same network, and either way
+ * both are usable — the alternative, per-connection binding, isn't available because the forecast
+ * stack shares one singleton OkHttpClient.)
+ */
+private object ProcessNetworkBinding {
+    private val lock = ReentrantLock()
+    private var depth = 0
+
+    /** Bind the process to [network] (if non-null) for the duration of [block], ref-counted. */
+    fun <T> withBinding(cm: ConnectivityManager?, network: Network?, block: () -> T): T {
+        val active = cm != null && network != null
+        if (active) lock.withLock {
+            if (depth == 0) runCatching { cm!!.bindProcessToNetwork(network) }
+            depth++
+        }
+        try {
+            return block()
+        } finally {
+            if (active) lock.withLock {
+                depth--
+                if (depth == 0) runCatching { cm!!.bindProcessToNetwork(null) }
+            }
+        }
+    }
+}
+
+/**
+ * One network the phone knows about, reduced to the three facts the picker cares about. Kept
+ * free of any Android type so the ranking below is unit-testable on the JVM without a device.
+ */
+internal data class NetCandidate(
+    /** Coarse transport: "wifi" | "cell" | "eth" | "oth". */
+    val transport: String,
+    /** Advertises `NET_CAPABILITY_INTERNET` (i.e. is meant to carry internet traffic). */
+    val hasInternet: Boolean,
+    /** `NET_CAPABILITY_VALIDATED` — the OS has confirmed a working, captive-portal-free path. */
+    val validated: Boolean,
+    /** This is the system's current active/default network. */
+    val isDefault: Boolean
+)
+
+/**
+ * Pure ranking of which network a widget refresh should bind to. Split out from
+ * [WidgetRepo.pickBestNetwork] (which does the Android `ConnectivityManager` I/O) so the decision
+ * — the part that was wrong in the "blank on 5G, fine on Wi-Fi" report — can be exercised by a
+ * plain JUnit test (see `NetworkPickerTest`).
+ */
+internal object NetworkPicker {
+    /** Label recorded when nothing is bindable. */
+    const val NONE = "none"
+
+    /**
+     * Return the index into [candidates] of the network to bind (or -1 for none), plus a short
+     * label for the diagnostics log. Priority, highest first:
+     *   1. the active default, IF the OS has VALIDATED it — the everyday healthy path;
+     *   2. any other VALIDATED internet network — routes around a dead/captive default Wi-Fi to
+     *      validated cellular (the earlier dead-Wi-Fi fix);
+     *   3. any CONNECTED internet network even if NOT yet validated, CELLULAR first — the new
+     *      fallback that recovers 5G the OS hasn't finished validating; without it steps 1-2 find
+     *      nothing during a handoff/Doze-exit/cold-start window and the widget blanks. Worst case
+     *      the bound network doesn't actually work and the fetch fails → NO DATA, exactly what
+     *      would have happened anyway; best case we get live data over 5G.
+     */
+    fun rank(candidates: List<NetCandidate>): Pair<Int, String> {
+        candidates.indexOfFirst { it.isDefault && it.hasInternet && it.validated }
+            .takeIf { it >= 0 }?.let { return it to "${candidates[it].transport}:val:default" }
+        candidates.indexOfFirst { it.hasInternet && it.validated }
+            .takeIf { it >= 0 }?.let { return it to "${candidates[it].transport}:val" }
+        candidates.indexOfFirst { it.hasInternet && it.transport == "cell" }
+            .takeIf { it >= 0 }?.let { return it to "cell:unval" }
+        candidates.indexOfFirst { it.hasInternet }
+            .takeIf { it >= 0 }?.let { return it to "${candidates[it].transport}:unval" }
+        return -1 to NONE
     }
 }

@@ -34,7 +34,14 @@ data class DiagEvent(
     /** The location the refresh reported for. */
     val place: String,
     /** Short failure reason, or null on a clean cycle. */
-    val error: String?
+    val error: String?,
+    /** Snapshot of every network at refresh time, e.g. "wifi(IV),cell(I)" (I=INTERNET,
+     *  V=VALIDATED). Proves whether a usable network was present-but-unvalidated (app-fixable)
+     *  versus genuinely absent (a real dead-zone) when a refresh failed. Empty on older entries. */
+    val nets: String = "",
+    /** Which network this refresh bound to and why — e.g. "wifi:val:default", "cell:unval",
+     *  "none". Together with [nets] this shows whether the picker's fallback engaged. */
+    val bind: String = ""
 ) {
     /** True when NEITHER half was live this cycle — the "both vanish together" case. */
     val bothBlank: Boolean get() = forecast != "OK" && home != "OK"
@@ -103,6 +110,8 @@ object WidgetDiagnostics {
         put("dur", e.durationMs)
         put("pl", e.place)
         put("err", e.error ?: JSONObject.NULL)
+        put("nets", e.nets)
+        put("bind", e.bind)
     }.toString()
 
     private fun decode(line: String): DiagEvent? = try {
@@ -116,7 +125,9 @@ object WidgetDiagnostics {
             homeObsAgeSec = o.optLong("age", -1L),
             durationMs = o.optLong("dur", -1L),
             place = o.optString("pl", ""),
-            error = if (o.isNull("err")) null else o.optString("err").ifBlank { null }
+            error = if (o.isNull("err")) null else o.optString("err").ifBlank { null },
+            nets = o.optString("nets", ""),
+            bind = o.optString("bind", "")
         )
     } catch (_: Exception) {
         null

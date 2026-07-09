@@ -266,7 +266,7 @@ private fun EventRow(event: DiagEvent, timeFmt: SimpleDateFormat) {
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "${event.trigger} · ${event.net}",
+                    "${event.trigger} · ${event.net}" + if (event.bind.isNotBlank()) " · bind ${event.bind}" else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -288,6 +288,15 @@ private fun EventRow(event: DiagEvent, timeFmt: SimpleDateFormat) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+            if (event.nets.isNotBlank()) {
+                Text(
+                    "nets ${event.nets}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp
+                )
             }
             if (!event.error.isNullOrBlank()) {
                 Text(
