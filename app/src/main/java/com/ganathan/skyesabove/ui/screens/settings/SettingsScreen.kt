@@ -21,6 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
@@ -72,6 +74,7 @@ import com.ganathan.skyesabove.ui.theme.SkyesAboveTheme
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -201,6 +204,19 @@ fun SettingsScreen(
                     selectedMode = uiState.themeMode,
                     onModeSelected = viewModel::updateThemeMode
                 )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Home Station Section (WU PWS that drives the widget's HOME half)
+                HomeStationSection(
+                    stationId = uiState.homeStationId,
+                    onStationIdChange = viewModel::updateHomeStationId
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Widget Diagnostics entry
+                DiagnosticsSection(onOpenDiagnostics = onOpenDiagnostics)
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
@@ -453,6 +469,109 @@ private fun ThemeModeSection(
                     )
                 )
             }
+        }
+    }
+}
+
+/**
+ * Home station section — the Weather Underground PWS that drives the widget's HOME (right) half.
+ * Configurable so the app isn't hard-wired to the author's garden sensor.
+ */
+@Composable
+private fun HomeStationSection(
+    stationId: String,
+    onStationIdChange: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Home,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Home Station",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = stationId,
+                    onValueChange = onStationIdChange,
+                    label = { Text("Weather Underground station ID") },
+                    placeholder = { Text("e.g., IKILLI35") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                    )
+                )
+                Text(
+                    text = "The widget's HOME (right) half reads this Weather Underground personal " +
+                        "weather station. Point it at any public WU station. Leave blank to use the " +
+                        "default. Note: the Trends tab and the pressure-trend arrow stay tied to the " +
+                        "app's garden sensor, so they only apply to the default station.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Widget diagnostics entry — opens the on-device refresh log that explains why the widget
+ * lost data (which half, network state, observation age) without needing adb/logcat.
+ */
+@Composable
+private fun DiagnosticsSection(
+    onOpenDiagnostics: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "Widget diagnostics",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = "A rolling on-device log of every widget refresh — which half was live, the " +
+                "network at the time, and how old the home observation was. Open it to see why " +
+                "the widget lost data.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedButton(
+            onClick = onOpenDiagnostics,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(
+                imageVector = Icons.Default.Insights,
+                contentDescription = null,
+                modifier = Modifier.padding(end = 8.dp)
+            )
+            Text("Open widget diagnostics")
         }
     }
 }

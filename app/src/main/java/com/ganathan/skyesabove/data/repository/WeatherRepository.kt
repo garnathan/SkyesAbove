@@ -95,7 +95,20 @@ class WeatherRepository @Inject constructor(
 
                     Result.success(WeatherResponse(enhancedCurrent, mergedForecast.hourly))
                 } else {
-                    Result.failure(Exception("Failed to fetch weather from all sources"))
+                    // Every source failed. Carry WHY per source (e.g. "UnknownHostException" from a
+                    // dead-Wi-Fi DNS, or a rate-limit HTTP code) so the widget's diagnostics log
+                    // explains the outage without needing logcat. Open-Meteo is the always-on
+                    // global source, so lead with it.
+                    fun reason(r: Result<*>): String = r.exceptionOrNull()
+                        ?.let { it.message?.take(80) ?: it.javaClass.simpleName } ?: "?"
+                    Result.failure(
+                        Exception(
+                            "all forecast sources failed — " +
+                                "openMeteo: ${reason(openMeteoResult)}; " +
+                                "metEireann: ${reason(metEireannResult)}; " +
+                                "owm: ${reason(openWeatherMapResult)}"
+                        )
+                    )
                 }
             } catch (e: Exception) {
                 Result.failure(e)

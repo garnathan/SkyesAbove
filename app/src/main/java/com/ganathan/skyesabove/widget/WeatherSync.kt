@@ -18,6 +18,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import com.ganathan.skyesabove.MainActivity
 import com.ganathan.skyesabove.R
 import com.ganathan.skyesabove.data.model.PressureTendency
@@ -36,10 +37,11 @@ object WidgetRenderer {
 
     /**
      * Load live data and push it to all widget instances.
+     * @param trigger the code path that drove this refresh (recorded for diagnostics).
      * @return the [WidgetData] that was rendered (its per-half [SourceStatus]es drive retry).
      */
-    fun renderNow(context: Context): WidgetData {
-        val data = WidgetRepo.load(context)
+    fun renderNow(context: Context, trigger: String): WidgetData {
+        val data = WidgetRepo.load(context, trigger)
         push(context, buildViews(context, data))
         return data
     }
@@ -120,8 +122,9 @@ class WeatherSyncWorker(context: Context, params: WorkerParameters) :
     CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val trigger = inputData.getString(KEY_TRIGGER) ?: "periodic"
         try {
-            val data = WidgetRenderer.renderNow(applicationContext)
+            val data = WidgetRenderer.renderNow(applicationContext, trigger)
             // A FETCH_ERROR means we couldn't reach a source (network) — retry fast so the
             // widget recovers as soon as signal is back. STALE (Pi down) or OK => done; the
             // periodic heartbeat will pick up recovery without hammering the dead sensor.
@@ -141,6 +144,7 @@ class WeatherSyncWorker(context: Context, params: WorkerParameters) :
     companion object {
         private const val PERIODIC = "skyes_widget_periodic"
         private const val ONESHOT = "skyes_widget_now"
+        private const val KEY_TRIGGER = "trigger"
         private val NETWORK = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
@@ -149,6 +153,7 @@ class WeatherSyncWorker(context: Context, params: WorkerParameters) :
         fun schedulePeriodic(context: Context) {
             val req = PeriodicWorkRequestBuilder<WeatherSyncWorker>(15, TimeUnit.MINUTES)
                 .setConstraints(NETWORK)
+                .setInputData(workDataOf(KEY_TRIGGER to "periodic"))
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
             WorkManager.getInstance(context)
@@ -160,6 +165,7 @@ class WeatherSyncWorker(context: Context, params: WorkerParameters) :
         fun refreshNow(context: Context) {
             val req = OneTimeWorkRequestBuilder<WeatherSyncWorker>()
                 .setConstraints(NETWORK)
+                .setInputData(workDataOf(KEY_TRIGGER to "oneshot"))
                 .setBackoffCriteria(BackoffPolicy.LINEAR, 30, TimeUnit.SECONDS)
                 .build()
             WorkManager.getInstance(context)

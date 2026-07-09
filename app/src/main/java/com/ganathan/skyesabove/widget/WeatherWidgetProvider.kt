@@ -36,8 +36,8 @@ class WeatherWidgetProvider : AppWidgetProvider() {
 
     override fun onUpdate(context: Context, mgr: AppWidgetManager, ids: IntArray) {
         WeatherSyncWorker.schedulePeriodic(context)
-        renderImmediately(context, mgr, ids)     // instant paint (don't wait on WorkManager)
-        WeatherSyncWorker.refreshNow(context)    // network-gated live refresh right away
+        renderImmediately(context, mgr, ids, "system_update")  // instant paint (don't wait on WorkManager)
+        WeatherSyncWorker.refreshNow(context)                  // network-gated live refresh right away
     }
 
     override fun onEnabled(context: Context) = WeatherSyncWorker.schedulePeriodic(context)
@@ -50,18 +50,27 @@ class WeatherWidgetProvider : AppWidgetProvider() {
             // Ensure the heartbeat exists (e.g. after reboot) and refresh now.
             WeatherSyncWorker.schedulePeriodic(context)
             val mgr = AppWidgetManager.getInstance(context)
-            renderImmediately(context, mgr, mgr.getAppWidgetIds(ComponentName(context, WeatherWidgetProvider::class.java)))
+            renderImmediately(context, mgr, mgr.getAppWidgetIds(ComponentName(context, WeatherWidgetProvider::class.java)), "refresh")
             WeatherSyncWorker.refreshNow(context)
         }
     }
 
-    /** Synchronous-ish paint off the broadcast, so a freshly-added widget shows data at once. */
-    private fun renderImmediately(context: Context, mgr: AppWidgetManager, ids: IntArray) {
+    /**
+     * Synchronous-ish paint off the broadcast, so a freshly-added widget shows data at once.
+     *
+     * We always attempt the live fetch. [WidgetRepo.load] pins the request to a validated network
+     * (routing around a dead/captive Wi-Fi) and, if the phone is genuinely offline, the fetch
+     * fails fast (a connect/DNS error in milliseconds, not a long timeout) and records the real
+     * reason. We deliberately do NOT try to pre-decide "offline" here: the earlier check keyed on
+     * getActiveNetwork(), which returns null in normal states (e.g. a fresh broadcast process),
+     * and that false negative blanked the widget when the phone actually had working internet.
+     */
+    private fun renderImmediately(context: Context, mgr: AppWidgetManager, ids: IntArray, trigger: String) {
         if (ids.isEmpty()) return
         val pending = goAsync()
         Thread {
             val views = try {
-                WidgetRenderer.buildViews(context, WidgetRepo.load(context))
+                WidgetRenderer.buildViews(context, WidgetRepo.load(context, trigger))
             } catch (e: Exception) {
                 Log.w(TAG, "immediate render failed -> NO DATA", e)
                 WidgetRenderer.buildNoData(context)

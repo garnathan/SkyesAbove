@@ -7,12 +7,16 @@ import android.location.Geocoder
 import android.location.Location
 import android.location.LocationManager
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
 import com.ganathan.skyesabove.data.model.PressureTendency
+import com.ganathan.skyesabove.data.preferences.UserSettings
 import com.ganathan.skyesabove.ui.util.WindDirectionUtil
 import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -66,7 +70,38 @@ object WidgetRepo {
 
     private data class LocResult(val lat: Double, val lon: Double, val name: String)
 
-    fun load(context: Context): WidgetData {
+    /** Result of fetching the LEFT (forecast) half. */
+    private data class ForecastResult(
+        val areaTemp: String, val rain: String,
+        val windValue: String, val windUnit: String, val todayEmoji: String,
+        val status: SourceStatus, val error: String?
+    ) {
+        companion object {
+            fun blank(status: SourceStatus, error: String?) =
+                ForecastResult(NO_DATA, NO_DATA, NO_DATA, "km/h", NO_DATA, status, error)
+        }
+    }
+
+    /** Result of fetching the RIGHT (WU home station) half. */
+    private data class HomeResult(
+        val temp: String, val humidity: String,
+        val feels: String, val feelsEmoji: String, val pressure: String,
+        val status: SourceStatus, val obsAgeSec: Long, val error: String?
+    ) {
+        companion object {
+            fun blank(status: SourceStatus, obsAgeSec: Long, error: String?) =
+                HomeResult(NO_DATA, NO_DATA, NO_DATA, NO_DATA, NO_DATA, status, obsAgeSec, error)
+        }
+    }
+
+    /**
+     * @param trigger which code path drove this refresh (system_update / refresh / periodic /
+     *   oneshot) — recorded in [WidgetDiagnostics] so we can later tell, with no adb, whether a
+     *   double-blank was the un-network-gated system update firing offline or a genuine
+     *   live-network failure. Defaults are harmless if a caller doesn't set it.
+     */
+    fun load(context: Context, trigger: String = "unknown"): WidgetData {
+        val startMs = System.currentTimeMillis()
         // REAL-TIME ONLY: every value is either live-this-refresh or "—" (NO DATA). We
         // deliberately do NOT retain last-good values and cache NOTHING — a blank/"—"
         // field is the signal that the pipeline (Pi -> WU, or the forecast source) is
@@ -76,14 +111,101 @@ object WidgetRepo {
         val ep = EntryPointAccessors.fromApplication(
             context.applicationContext, WidgetEntryPoint::class.java
         )
-        val loc = resolveLocation(context, ep)
 
-        // LEFT half — live multi-source forecast for the current location; "—" on any failure.
-        var areaTemp = NO_DATA; var rain = NO_DATA
-        var windValue = NO_DATA; var windUnit = "km/h"; var todayEmoji = NO_DATA
-        var forecastStatus = SourceStatus.FETCH_ERROR
+        // ROOT-CAUSE FIX for "both halves vanish together": when the phone is associated with a
+        // connected-but-dead network (a captive / not-yet-validated Wi-Fi whose DNS is broken),
+        // the app resolves every host against that dead network and ALL fetches fail — even
+        // though cellular is up and validated. Pin this refresh's connections to a network that
+        // the system has actually VALIDATED as having working internet, routing around the dead
+        // one. Costs nothing when the default is already good (fast path returns it); no polling.
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val validated = pickValidatedNetwork(cm)
+        val bound = validated != null && (cm?.bindProcessToNetwork(validated) ?: false)
         try {
-            val res = runBlocking { ep.weatherRepository().getWeather(loc.lat, loc.lon) }.getOrNull()
+            val loc = resolveLocation(context, ep)
+
+            // Which WU station drives the HOME half — configurable in Settings so the app isn't
+            // hard-wired to the author's garden PWS. Defaults to the garden station (IKILLI35).
+            val stationId = runCatching {
+                runBlocking { ep.settingsDataStore().homeStationId.first() }
+            }.getOrNull()?.takeIf { it.isNotBlank() } ?: UserSettings.DEFAULT_HOME_STATION
+
+            // The two halves are independent network fetches — run them CONCURRENTLY so a refresh
+            // finishes in about max(forecast, WU) instead of their sum. Same requests, same data,
+            // just not serialised: less wall-clock, less wake time, and far less chance of the
+            // immediate (broadcast) path overrunning its budget. No extra battery cost.
+            val (fc, home) = runBlocking(Dispatchers.IO) {
+                val fcDef = async { fetchForecast(ep, loc) }
+                val homeDef = async { fetchHome(stationId) }
+                fcDef.await() to homeDef.await()
+            }
+
+            // 3-hour barometric tendency (arrow next to pressure). Only meaningful when the home
+            // pressure is live AND we're pointed at the garden station — the tendency is computed
+            // from the garden Pi's GitHub history, which is meaningless for someone else's PWS.
+            val isGardenStation = stationId.equals(UserSettings.DEFAULT_HOME_STATION, ignoreCase = true)
+            val pressureTendency = if (home.status == SourceStatus.OK && isGardenStation) {
+                runCatching { runBlocking { ep.gardenHistoryRepository().pressureTendency() } }.getOrNull()
+            } else null
+
+            val net = networkState(context)
+            val err = listOfNotNull(
+                fc.error?.let { "fc:$it" },
+                home.error?.let { "hm:$it" }
+            ).joinToString("; ").ifBlank { null }
+
+            WidgetDiagnostics.record(
+                context,
+                DiagEvent(
+                    timeMs = startMs, trigger = trigger, net = net,
+                    forecast = fc.status.name, home = home.status.name, homeObsAgeSec = home.obsAgeSec,
+                    durationMs = System.currentTimeMillis() - startMs, place = loc.name, error = err
+                )
+            )
+            Log.i(
+                TAG,
+                "refresh done trig=$trigger net=$net bound=$bound place='${loc.name}' " +
+                    "forecast=${fc.status} home=${home.status} obsAge=${home.obsAgeSec}s tendency=$pressureTendency"
+            )
+
+            return WidgetData(
+                place = loc.name,
+                areaTemp = fc.areaTemp, rain = fc.rain, windValue = fc.windValue, windUnit = fc.windUnit, todayEmoji = fc.todayEmoji,
+                temp = home.temp, humidity = home.humidity, feels = home.feels, feelsEmoji = home.feelsEmoji, pressure = home.pressure,
+                pressureTendency = pressureTendency,
+                forecast = fc.status, home = home.status
+            )
+        } finally {
+            // Always release the binding so we don't pin the process to a network that may later
+            // go away; the next refresh re-picks. bindProcessToNetwork(null) restores the default.
+            if (bound) runCatching { cm?.bindProcessToNetwork(null) }
+        }
+    }
+
+    /**
+     * The best currently-connected network that the system has VALIDATED as having real internet
+     * (and that advertises INTERNET), or null if none. Used to route a refresh around a
+     * connected-but-dead network (captive/broken Wi-Fi) that would otherwise fail DNS for every
+     * host. Fast path: the active default if it's already validated; otherwise scan all networks
+     * (this is how we find validated cellular when the phone is sitting on a dead Wi-Fi).
+     */
+    private fun pickValidatedNetwork(cm: ConnectivityManager?): Network? {
+        cm ?: return null
+        fun validatedInternet(n: Network?): Boolean {
+            val c = n?.let { cm.getNetworkCapabilities(it) } ?: return false
+            return c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+        cm.activeNetwork?.let { if (validatedInternet(it)) return it }
+        @Suppress("DEPRECATION")
+        return cm.allNetworks.firstOrNull { validatedInternet(it) }
+    }
+
+    /** LEFT half — live multi-source forecast for the current location; "—" on any failure. */
+    private suspend fun fetchForecast(ep: WidgetEntryPoint, loc: LocResult): ForecastResult {
+        return try {
+            val result = ep.weatherRepository().getWeather(loc.lat, loc.lon)
+            val res = result.getOrNull()
             val cur = res?.current
             if (cur != null) {
                 // Show "now/high" — current temp + today's forecast high (e.g. 23/25°),
@@ -94,64 +216,49 @@ object WidgetRepo {
                     .filter { it.time.startsWith(today) }
                     .maxOfOrNull { it.temperature }
                     ?.roundToInt()
-                areaTemp = if (high != null && high >= now) "$now/$high°" else "$now°"
-                rain = formatPrecip(cur.precipitation)
-                windValue = "${cur.windSpeed.roundToInt()}"
-                windUnit = "km/h " + WindDirectionUtil.degreesToCompassDirection(cur.windDirection.toDouble())
-                todayEmoji = conditionEmoji(cur.description, cur.symbol)
-                forecastStatus = SourceStatus.OK
+                ForecastResult(
+                    areaTemp = if (high != null && high >= now) "$now/$high°" else "$now°",
+                    rain = formatPrecip(cur.precipitation),
+                    windValue = "${cur.windSpeed.roundToInt()}",
+                    windUnit = "km/h " + WindDirectionUtil.degreesToCompassDirection(cur.windDirection.toDouble()),
+                    todayEmoji = conditionEmoji(cur.description, cur.symbol),
+                    status = SourceStatus.OK, error = null
+                )
             } else {
-                // All public sources returned nothing — almost always a reachability problem.
-                Log.w(TAG, "forecast returned null -> NO DATA (!)")
-                forecastStatus = SourceStatus.FETCH_ERROR
+                // All public sources returned nothing. Surface WHY (the per-source reason built
+                // by WeatherRepository — e.g. "UnknownHostException" from a dead-Wi-Fi DNS) so
+                // the diagnostics log is self-explanatory without needing logcat.
+                val reason = result.exceptionOrNull()?.message ?: "no current data"
+                Log.w(TAG, "forecast unavailable -> NO DATA (!): $reason")
+                ForecastResult.blank(SourceStatus.FETCH_ERROR, reason)
             }
         } catch (e: Exception) {
             Log.w(TAG, "forecast fetch failed -> NO DATA (!)", e)
-            forecastStatus = SourceStatus.FETCH_ERROR
+            ForecastResult.blank(SourceStatus.FETCH_ERROR, e.message ?: e.javaClass.simpleName)
         }
+    }
 
-        // RIGHT half — the user's own WU HOME station. WuStation.fetch() THROWS unless the
-        // observation is FRESH (WU keeps serving the last obs after the Pi dies), so a dead
-        // pipeline shows "—" rather than a stuck stale reading.
-        var temp = NO_DATA; var humidity = NO_DATA
-        var feels = NO_DATA; var feelsEmoji = NO_DATA; var pressure = NO_DATA
-        var homeStatus = SourceStatus.FETCH_ERROR
-        try {
-            val h = WuStation.fetch()
-            temp = h.temp; humidity = h.humidity; feels = h.feels; feelsEmoji = h.feelsEmoji; pressure = h.pressure
-            homeStatus = SourceStatus.OK
+    /**
+     * RIGHT half — the user's own WU HOME station. WuStation.fetch() THROWS unless the
+     * observation is FRESH (WU keeps serving the last obs after the Pi dies), so a dead
+     * pipeline shows "—" rather than a stuck stale reading.
+     */
+    private suspend fun fetchHome(stationId: String): HomeResult {
+        return try {
+            val h = WuStation.fetch(stationId)
+            HomeResult(h.temp, h.humidity, h.feels, h.feelsEmoji, h.pressure, SourceStatus.OK, h.obsAgeSec, null)
         } catch (e: WuStation.StaleObsException) {
-            // Reached WU, but the observation is old => the Pi/garden pipeline is down.
-            Log.w(TAG, "WU obs stale (${e.ageSec}s) -> NO DATA (!) — Pi likely down")
-            homeStatus = SourceStatus.STALE
+            // Reached WU, but the observation is old => the sensor/pipeline is down.
+            Log.w(TAG, "WU obs stale (${e.ageSec}s) -> NO DATA (!) — station likely down")
+            HomeResult.blank(SourceStatus.STALE, e.ageSec, "stale ${e.ageSec}s")
         } catch (e: Exception) {
             Log.w(TAG, "WU station unreachable -> NO DATA (!)", e)
-            homeStatus = SourceStatus.FETCH_ERROR
+            HomeResult.blank(SourceStatus.FETCH_ERROR, -1L, e.message ?: e.javaClass.simpleName)
         }
-
-        // 3-hour barometric tendency (arrow next to pressure). Only meaningful when the home
-        // pressure is live; computed from the Pi's GitHub history (clean 5-min series).
-        val pressureTendency = if (homeStatus == SourceStatus.OK) {
-            runCatching { runBlocking { ep.gardenHistoryRepository().pressureTendency() } }.getOrNull()
-        } else null
-
-        Log.i(
-            TAG,
-            "refresh done net=${networkState(context)} place='${loc.name}' " +
-                "forecast=$forecastStatus home=$homeStatus tendency=$pressureTendency"
-        )
-
-        return WidgetData(
-            place = loc.name,
-            areaTemp = areaTemp, rain = rain, windValue = windValue, windUnit = windUnit, todayEmoji = todayEmoji,
-            temp = temp, humidity = humidity, feels = feels, feelsEmoji = feelsEmoji, pressure = pressure,
-            pressureTendency = pressureTendency,
-            forecast = forecastStatus, home = homeStatus
-        )
     }
 
     /** Coarse connectivity label for the diagnostic log (WIFI / CELLULAR / OTHER / NONE). */
-    private fun networkState(context: Context): String {
+    fun networkState(context: Context): String {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return "UNKNOWN"
         val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return "NONE"
@@ -294,34 +401,36 @@ object WidgetRepo {
     }
 }
 
-/** The user's home Weather Underground PWS (IKILLI35) — the right half of the widget. */
+/** The user's home Weather Underground PWS — the right half of the widget. The station ID is
+ *  configurable (Settings), defaulting to the author's garden station (IKILLI35). */
 object WuStation {
-    private const val STATION = "IKILLI35"
-    private const val STALE_SEC = 15L * 60L      // reject a WU obs older than 15 min => Pi likely down => NO DATA
+    private const val STALE_SEC = 15L * 60L      // reject a WU obs older than 15 min => sensor likely down => NO DATA
     private val KEY = com.ganathan.skyesabove.BuildConfig.WU_API_KEY
 
     data class Home(
         val temp: String, val humidity: String,
-        val feels: String, val feelsEmoji: String, val pressure: String
+        val feels: String, val feelsEmoji: String, val pressure: String,
+        /** Age of the observation in seconds at fetch time — recorded for diagnostics. */
+        val obsAgeSec: Long
     )
 
     /** Thrown when WU IS reachable but the latest observation is older than the freshness
-     *  window — i.e. the Pi stopped uploading. Distinct from a network/HTTP failure so the
+     *  window — i.e. the sensor stopped uploading. Distinct from a network/HTTP failure so the
      *  scheduler can tell "sensor down" (don't hammer) from "unreachable" (retry fast). */
     class StaleObsException(val ageSec: Long) : RuntimeException("stale WU obs (age=${ageSec}s > ${STALE_SEC}s)")
 
-    /** Fetch the CURRENT observation, but only if it is FRESH. WU keeps returning the last
-     *  observation after the Pi stops uploading, so a stale obs (older than STALE_SEC) is
-     *  rejected (throws StaleObsException) and the widget shows NO DATA instead of a stuck
-     *  reading. A small retry rides out transient network blips. */
-    fun fetch(): Home {
+    /** Fetch the CURRENT observation for [stationId], but only if it is FRESH. WU keeps
+     *  returning the last observation after the sensor stops uploading, so a stale obs (older
+     *  than STALE_SEC) is rejected (throws StaleObsException) and the widget shows NO DATA
+     *  instead of a stuck reading. A small retry rides out transient network blips. */
+    fun fetch(stationId: String): Home {
         val url = "https://api.weather.com/v2/pws/observations/current" +
-            "?stationId=$STATION&format=json&units=m&apiKey=$KEY"
+            "?stationId=$stationId&format=json&units=m&apiKey=$KEY"
         var last: Exception? = null
         for (attempt in 0 until 2) {
             try {
                 val obs = JSONObject(httpGet(url)).getJSONArray("observations").getJSONObject(0)
-                // REAL-TIME GUARD: reject a stale observation (a dead Pi -> WU serves its last one).
+                // REAL-TIME GUARD: reject a stale observation (a dead sensor -> WU serves its last one).
                 val obsEpoch = obs.optLong("epoch", 0L)
                 val ageSec = System.currentTimeMillis() / 1000L - obsEpoch
                 if (obsEpoch <= 0L || ageSec > STALE_SEC)
@@ -343,7 +452,8 @@ object WuStation {
                     humidity = "$hum%",
                     feels = "${feelsV.roundToInt()}°",
                     feelsEmoji = feelsEmoji,
-                    pressure = if (press.isNaN()) "—" else "${press.roundToInt()}"
+                    pressure = if (press.isNaN()) "—" else "${press.roundToInt()}",
+                    obsAgeSec = ageSec
                 )
             } catch (e: StaleObsException) {
                 throw e   // reaching WU worked; retrying won't un-stale the obs — surface it now

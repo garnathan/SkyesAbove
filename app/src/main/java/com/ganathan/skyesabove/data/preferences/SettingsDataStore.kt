@@ -41,7 +41,8 @@ data class UserSettings(
     val longitude: Double = DEFAULT_LONGITUDE,
     val temperatureUnit: TemperatureUnit = TemperatureUnit.CELSIUS,
     val openWeatherMapApiKey: String = DEFAULT_OWM_API_KEY,
-    val themeMode: ThemeMode = ThemeMode.SYSTEM
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val homeStationId: String = DEFAULT_HOME_STATION
 ) {
     companion object {
         // Default location: Killiney, Ireland
@@ -49,6 +50,9 @@ data class UserSettings(
         const val DEFAULT_LONGITUDE = -6.1083
         // OpenWeatherMap API key - get free key at https://openweathermap.org/api
         const val DEFAULT_OWM_API_KEY = ""
+        // Weather Underground PWS that drives the widget's HOME (right) half. Defaults to the
+        // author's garden station; configurable so anyone can point the widget at their own PWS.
+        const val DEFAULT_HOME_STATION = "IKILLI35"
     }
 }
 
@@ -75,6 +79,7 @@ class SettingsDataStore @Inject constructor(
         val TEMPERATURE_UNIT = stringPreferencesKey("temperature_unit")
         val OWM_API_KEY = stringPreferencesKey("owm_api_key")
         val THEME_MODE = stringPreferencesKey("theme_mode")
+        val HOME_STATION_ID = stringPreferencesKey("home_station_id")
 
         // Last SUCCESSFULLY-resolved device location. This is a *location* cache (never a
         // weather-value cache): if a live GPS/network fix fails, the widget reuses the last
@@ -97,8 +102,19 @@ class SettingsDataStore @Inject constructor(
             openWeatherMapApiKey = preferences[PreferencesKeys.OWM_API_KEY] ?: UserSettings.DEFAULT_OWM_API_KEY,
             themeMode = preferences[PreferencesKeys.THEME_MODE]?.let {
                 ThemeMode.valueOf(it)
-            } ?: ThemeMode.SYSTEM
+            } ?: ThemeMode.SYSTEM,
+            homeStationId = preferences[PreferencesKeys.HOME_STATION_ID]?.takeIf { it.isNotBlank() }
+                ?: UserSettings.DEFAULT_HOME_STATION
         )
+    }
+
+    /**
+     * Flow of the Weather Underground station ID that drives the widget's HOME half.
+     * Falls back to the default garden station when unset/blank.
+     */
+    val homeStationId: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.HOME_STATION_ID]?.takeIf { it.isNotBlank() }
+            ?: UserSettings.DEFAULT_HOME_STATION
     }
 
     /**
@@ -230,6 +246,21 @@ class SettingsDataStore @Inject constructor(
             preferences[PreferencesKeys.LAST_LOC_LAT] = latitude
             preferences[PreferencesKeys.LAST_LOC_LON] = longitude
             preferences[PreferencesKeys.LAST_LOC_NAME] = name
+        }
+    }
+
+    /**
+     * Update the Weather Underground home-station ID (drives the widget's HOME half).
+     * A blank value clears the override, restoring the default garden station.
+     */
+    suspend fun setHomeStationId(stationId: String) {
+        context.dataStore.edit { preferences ->
+            val trimmed = stationId.trim()
+            if (trimmed.isBlank()) {
+                preferences.remove(PreferencesKeys.HOME_STATION_ID)
+            } else {
+                preferences[PreferencesKeys.HOME_STATION_ID] = trimmed.uppercase()
+            }
         }
     }
 

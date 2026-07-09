@@ -22,6 +22,7 @@ data class SettingsUiState(
     val longitude: String = "",
     val temperatureUnit: TemperatureUnit = TemperatureUnit.CELSIUS,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val homeStationId: String = "",
     val isLoading: Boolean = true,
     val isSaving: Boolean = false,
     val saveSuccess: Boolean = false,
@@ -76,6 +77,7 @@ class SettingsViewModel @Inject constructor(
                         longitude = settings.longitude.toString(),
                         temperatureUnit = settings.temperatureUnit,
                         themeMode = settings.themeMode,
+                        homeStationId = settings.homeStationId,
                         isLoading = false
                     )
                 }
@@ -219,6 +221,41 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * Updates the Weather Underground home-station ID that drives the widget's HOME half.
+     * Persisted on each change (blank restores the default garden station).
+     *
+     * @param stationId New station ID (e.g. IKILLI35)
+     */
+    fun updateHomeStationId(stationId: String) {
+        _uiState.update {
+            it.copy(
+                homeStationId = stationId,
+                saveSuccess = false,
+                errorMessage = null
+            )
+        }
+        viewModelScope.launch {
+            try {
+                _uiState.update { it.copy(isSaving = true) }
+                settingsDataStore.setHomeStationId(stationId)
+                _uiState.update {
+                    it.copy(
+                        isSaving = false,
+                        saveSuccess = true
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isSaving = false,
+                        errorMessage = "Failed to save home station: ${e.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    /**
      * Resets all settings to default values.
      */
     fun resetToDefaults() {
@@ -232,6 +269,7 @@ class SettingsViewModel @Inject constructor(
                         longitude = UserSettings.DEFAULT_LONGITUDE.toString(),
                         temperatureUnit = TemperatureUnit.CELSIUS,
                         themeMode = ThemeMode.SYSTEM,
+                        homeStationId = UserSettings.DEFAULT_HOME_STATION,
                         isSaving = false,
                         saveSuccess = true
                     )

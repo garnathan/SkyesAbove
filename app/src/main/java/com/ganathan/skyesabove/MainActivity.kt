@@ -31,6 +31,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ganathan.skyesabove.data.preferences.SettingsDataStore
 import com.ganathan.skyesabove.data.preferences.ThemeMode
+import com.ganathan.skyesabove.ui.screens.diagnostics.DiagnosticsScreen
 import com.ganathan.skyesabove.ui.screens.settings.SettingsScreen
 import com.ganathan.skyesabove.ui.screens.trends.TrendsScreen
 import com.ganathan.skyesabove.ui.screens.weather.WeatherScreen
@@ -108,6 +109,13 @@ fun SkyesAboveApp(
 
             composable(route = NavigationRoutes.SETTINGS) {
                 SettingsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onOpenDiagnostics = { navController.navigate(NavigationRoutes.DIAGNOSTICS) }
+                )
+            }
+
+            composable(route = NavigationRoutes.DIAGNOSTICS) {
+                DiagnosticsScreen(
                     onNavigateBack = { navController.popBackStack() }
                 )
             }
@@ -178,4 +186,5 @@ object NavigationRoutes {
     const val FORECAST = "forecast"
     const val TRENDS = "trends"
     const val SETTINGS = "settings"
+    const val DIAGNOSTICS = "diagnostics"
 }
