@@ -14,11 +14,13 @@ import com.ganathan.skyesabove.data.model.SunData
 import com.ganathan.skyesabove.data.model.WeatherData
 import com.ganathan.skyesabove.data.model.WeatherResponse
 import com.ganathan.skyesabove.data.preferences.SettingsDataStore
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -497,14 +499,21 @@ class WeatherRepository @Inject constructor(
                         val results = sunResponse.results
                         val dayLengthHours = results.dayLength / 3600.0
 
-                        Result.success(
-                            SunData(
-                                sunrise = formatTime(results.sunrise),
-                                sunset = formatTime(results.sunset),
-                                civilTwilightEnd = formatTime(results.civilTwilightEnd),
-                                dayLengthHours = dayLengthHours
-                            )
+                        val sunData = SunData(
+                            sunrise = formatTime(results.sunrise),
+                            sunset = formatTime(results.sunset),
+                            civilTwilightEnd = formatTime(results.civilTwilightEnd),
+                            dayLengthHours = dayLengthHours
                         )
+                        // Local-zone times for display. Logged so the fix can be verified on a
+                        // real device (UTC API sunset -> local): raw "${results.sunset}".
+                        Log.i(
+                            "SkyesSun",
+                            "sun times (${ZoneId.systemDefault()}): sunrise=${sunData.sunrise} " +
+                                "sunset=${sunData.sunset} civilTwilightEnd=${sunData.civilTwilightEnd} " +
+                                "[raw sunset=${results.sunset}]"
+                        )
+                        Result.success(sunData)
                     } else {
                         Result.failure(Exception("Invalid sun data response"))
                     }
@@ -548,19 +557,32 @@ class WeatherRepository @Inject constructor(
     }
 
     /**
-     * Format ISO 8601 time string to display format (HH:mm).
+     * Format an ISO-8601 sun time to a local-zone "HH:mm" for display.
+     *
+     * Delegates to the pure [isoToLocalHhMm] using the device's zone. See that function for why
+     * the old string-chopping approach showed sunset an hour early during Irish Summer Time.
      */
-    private fun formatTime(isoTime: String): String {
-        return try {
-            val timePart = isoTime.substringAfter("T").substringBefore("+").substringBefore("-")
-            val parts = timePart.split(":")
-            if (parts.size >= 2) {
-                "${parts[0]}:${parts[1]}"
-            } else {
-                isoTime
-            }
-        } catch (e: Exception) {
-            isoTime
-        }
-    }
+    private fun formatTime(isoTime: String): String = isoToLocalHhMm(isoTime, ZoneId.systemDefault())
 }
+
+/**
+ * Convert an ISO-8601 timestamp that carries an explicit offset (what sunrise-sunset.org returns
+ * with formatted=0, e.g. "2026-07-09T20:52:45+00:00" in UTC) to a local-zone "HH:mm" string.
+ *
+ * The previous implementation string-chopped the clock field out of the ISO text
+ * (`substringAfter("T").substringBefore("+")`) and displayed it verbatim, so it printed the UTC
+ * clock time and ignored the offset entirely. During Irish Summer Time (UTC+1) that showed sunset
+ * as 20:52 instead of the correct 21:52 — the ~1-hour discrepancy against SkyeJS, which hands the
+ * same ISO string to a date library that localises it. We parse the absolute instant from the
+ * offset and render it in [zone], so the displayed clock time matches the wall clock.
+ *
+ * Pure and Android-free so it can be unit-tested against a fixed zone (see SunTimeFormatTest).
+ * Falls back to the raw input if the string doesn't parse, matching the old fail-safe behaviour.
+ */
+internal fun isoToLocalHhMm(isoTime: String, zone: ZoneId): String = try {
+    OffsetDateTime.parse(isoTime).atZoneSameInstant(zone).format(HHMM_FORMAT)
+} catch (e: Exception) {
+    isoTime
+}
+
+private val HHMM_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
