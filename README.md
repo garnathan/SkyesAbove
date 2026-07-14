@@ -58,21 +58,6 @@ Sun and twilight times come from the Sunrise–Sunset API, shown in your local t
   picks), choose your home garden station, switch °C / °F, pick a light / dark / system theme,
   and add your OpenWeatherMap key.
 
-## The home-screen widget
-
-A transparent **4×2** widget that splits in two:
-
-- **Left half** — the merged three-source forecast for wherever your phone is.
-- **Right half** — your home garden station's latest reading.
-
-The widget refreshes on a **self-healing ~15-minute heartbeat** (WorkManager, Doze-aware and
-network-gated) and kicks an immediate refresh whenever you add or tap it, so it recovers the
-moment connectivity returns.
-
-> **Live data only.** If the widget can't get a genuine real-time reading, it shows **`—` (NO
-> DATA)** rather than a stale value or an old timestamp. What you see on the widget is always
-> current, or it's honestly blank.
-
 ## Tech stack
 
 - **Kotlin** + **Jetpack Compose** (Material 3)
@@ -82,38 +67,6 @@ moment connectivity returns.
 - **WorkManager** for the widget's background refresh
 - **DataStore** for settings
 - Min SDK 26 · Target SDK 34
-
-## Build & run
-
-Requires JDK 17.
-
-```bash
-# Debug build
-./gradlew assembleDebug
-
-# Install onto a connected device / emulator
-./gradlew installDebug
-```
-
-OpenWeatherMap is optional — the app works out of the box on Open-Meteo (and Met Éireann in
-Ireland). To enable the third source, add a free [OpenWeatherMap](https://openweathermap.org/api)
-API key under **Settings**.
-
-## Project layout
-
-```
-app/src/main/java/com/ganathan/skyesabove/
-├── data/
-│   ├── api/           # Retrofit services: Met Éireann, Open-Meteo, OpenWeatherMap,
-│   │                  #   Sunrise-Sunset, and the garden-history feed
-│   ├── model/         # Weather, sun, and sensor-trend data models
-│   ├── repository/    # WeatherRepository (merges the 3 sources) + GardenHistoryRepository
-│   └── preferences/   # DataStore-backed settings
-├── ui/
-│   ├── screens/       # weather · trends · settings · diagnostics
-│   └── theme/         # Material 3 theme
-└── widget/            # Home-screen widget + WorkManager refresh worker
-```
 
 ## Related project
 
