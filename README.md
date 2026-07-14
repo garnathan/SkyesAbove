@@ -7,7 +7,24 @@ Skyes Above pulls the forecast from three independent weather services at once a
 It's built with Jetpack Compose and Material 3, and it comes with a transparent home-screen
 widget that shows your local forecast next to your own back-garden weather station.
 
-<!-- SCREENSHOTS -->
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/widget.png" width="720" alt="Skyes Above home-screen widget: local forecast on the left, home garden station on the right">
+  <br>
+  <em>The home-screen widget — your local forecast on the left, your garden station on the right.</em>
+</p>
+
+<table>
+  <tr>
+    <td align="center"><b>Home — now, hourly &amp; 7-day</b></td>
+    <td align="center"><b>Garden trends</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/weather.png" width="320" alt="Weather home screen with current conditions and details"></td>
+    <td><img src="docs/screenshots/trends.png" width="320" alt="Garden sensor trends with temperature chart"></td>
+  </tr>
+</table>
 
 ## Why three sources?
 
@@ -37,8 +54,9 @@ Sun and twilight times come from the Sunrise–Sunset API, shown in your local t
   station.
 - **On-device diagnostics** — see exactly what each data source returned (and *why* a fetch
   failed) without ever needing a cable or `logcat`.
-- **Configurable** — auto-locate by GPS or pin a location, choose your home garden station, add
-  your OpenWeatherMap key, and refresh on demand.
+- **Configurable** — auto-locate by GPS or pin a location (with Dublin / Cork / Galway quick
+  picks), choose your home garden station, switch °C / °F, pick a light / dark / system theme,
+  and add your OpenWeatherMap key.
 
 ## The home-screen widget
 
