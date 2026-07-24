@@ -60,7 +60,16 @@ data class WidgetData(
     val pressureTendency: PressureTendency? = null,
     // Per-half outcomes: drive the "!" indicators and the scheduler's retry decision.
     val forecast: SourceStatus = SourceStatus.OK,
-    val home: SourceStatus = SourceStatus.OK
+    val home: SourceStatus = SourceStatus.OK,
+    /**
+     * Whether a usable internet network existed at refresh time (the picker found something to
+     * bind to — validated or not). FALSE means a genuine outage: no INTERNET-capable network at
+     * all. This distinguishes "the phone is really offline" (blank the widget — real-time-only)
+     * from "a background broadcast was denied network access even though Wi-Fi/cellular are up"
+     * (the 30-min system_update tick in Doze/standby — NOT an outage, so the immediate paint must
+     * not flash a dash; see [ImmediatePaintPolicy]).
+     */
+    val usableNetworkPresent: Boolean = true
 ) {
     /** True if either half could not be REACHED this cycle (network) — worth a fast retry. */
     val anyFetchError: Boolean
@@ -182,7 +191,11 @@ object WidgetRepo {
                 areaTemp = fc.areaTemp, rain = fc.rain, windValue = fc.windValue, windUnit = fc.windUnit, todayEmoji = fc.todayEmoji,
                 temp = home.temp, humidity = home.humidity, feels = home.feels, feelsEmoji = home.feelsEmoji, pressure = home.pressure,
                 pressureTendency = pressureTendency,
-                forecast = fc.status, home = home.status
+                forecast = fc.status, home = home.status,
+                // The picker binds a network only when one carries INTERNET; a null pick == genuine
+                // outage. A both-halves reachability failure WITH a usable network present is the
+                // background-denied false blank the immediate paint must suppress.
+                usableNetworkPresent = pick.network != null
             )
         }
     }
@@ -614,4 +627,43 @@ internal object NetworkPicker {
             .takeIf { it >= 0 }?.let { return it to "${candidates[it].transport}:unval" }
         return -1 to NONE
     }
+}
+
+/**
+ * Pure decision for the IMMEDIATE (broadcast) paint: should this refresh SUPPRESS a NO-DATA
+ * repaint instead of flashing a dash?
+ *
+ * Why this exists: the AppWidget framework fires `onUpdate` on a ~30-min `updatePeriodMillis`
+ * tick (trigger `system_update`), and that path fetches inline on a background broadcast thread.
+ * On modern Android a background broadcast to a Doze/App-Standby-restricted process is DENIED
+ * network access — `getActiveNetwork()` returns null and DNS fails on every host — EVEN THOUGH
+ * Wi-Fi/cellular are up and validated. The on-device diagnostics log proved this was the single
+ * dominant cause of "both halves vanish": 100% of both-blank cycles were `system_update` with a
+ * validated network sitting unused in the inventory, while the network-capable WorkManager paths
+ * never failed. Painting a dash there is wrong — the data is fetchable; the broadcast just wasn't
+ * granted the network. So we leave the last good render for the WorkManager one-shot (kicked
+ * alongside this same `onUpdate`, and which DOES get network access) to refresh.
+ *
+ * The suppression is deliberately narrow, so real-time-only still holds:
+ *  - BOTH halves must be FETCH_ERROR (a reachability failure). A STALE half means WU was reached
+ *    (the network worked) and the sensor is down — that dash is real and must show. A single-half
+ *    failure never suppresses: the working half's fresh value is worth showing and the failed
+ *    half's "!" is accurate.
+ *  - A usable internet network must have been present. With genuinely no network (airplane mode,
+ *    a real dead zone) this is false, we do NOT suppress, and the widget blanks — exactly what a
+ *    real-time-only widget should do on a true outage.
+ *
+ * Only the immediate/broadcast path uses this. The WorkManager path ([WidgetRenderer.renderNow])
+ * always paints the truth, so a PERSISTENT real failure still surfaces as a dash within a
+ * heartbeat — we only stop the transient background-denial flicker.
+ */
+internal object ImmediatePaintPolicy {
+    fun suppressNoDataPaint(
+        forecast: SourceStatus,
+        home: SourceStatus,
+        usableNetworkPresent: Boolean
+    ): Boolean =
+        usableNetworkPresent &&
+            forecast == SourceStatus.FETCH_ERROR &&
+            home == SourceStatus.FETCH_ERROR
 }
